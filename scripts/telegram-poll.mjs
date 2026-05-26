@@ -8,6 +8,8 @@ import { createClient } from '@supabase/supabase-js'
 import { classify, VALID_AREAS } from './classify.mjs'
 import { transcribeAudio } from './transcribe.mjs'
 import { proposeCalendarEvent, formatProposal } from './propose.mjs'
+import { storeChunk } from './embed.mjs'
+import { ask, formatSources } from './ask.mjs'
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const ALLOWED = process.env.TELEGRAM_CHAT_ID // valgfri lås: kun denne chat accepteres
@@ -113,9 +115,30 @@ async function handleMessage(msg) {
     return
   }
 
+  // /ask <spørgsmål> -> semantisk søgning i second brain + Claude-svar med kilder.
+  // Beskeden gemmes IKKE som capture (det er et query, ikke et input).
+  if (msg.text && /^\/ask(\s|$)/i.test(msg.text)) {
+    const question = msg.text.replace(/^\/ask\s*/i, '').trim()
+    if (!question) {
+      await tg('sendMessage', { chat_id: chatId, text: 'Brug: /ask <spørgsmål>. Fx: /ask hvad var jeg ved at glemme i går?' })
+      return
+    }
+    await tg('sendChatAction', { chat_id: chatId, action: 'typing' })
+    try {
+      const { answer, sources } = await ask(question)
+      const srcText = sources.length ? '\n\n' + formatSources(sources) : ''
+      await tg('sendMessage', { chat_id: chatId, text: answer + srcText })
+      console.log(`/ask: "${question}" -> ${sources.length} kilder`)
+    } catch (e) {
+      console.error('/ask fejlede:', e.message)
+      await tg('sendMessage', { chat_id: chatId, text: `Kunne ikke svare lige nu: ${e.message}` })
+    }
+    return
+  }
+
   // Kommandoer (fx /start) gemmes ikke
   if (msg.text && msg.text.startsWith('/')) {
-    await tg('sendMessage', { chat_id: chatId, text: 'Hej Gustav. Send mig tekst eller en voicenote, så fanger jeg det i din second brain.' })
+    await tg('sendMessage', { chat_id: chatId, text: 'Hej Gustav. Send tekst eller voicenote til capture. Brug /ask <spørgsmål> til at spørge din second brain.' })
     return
   }
 
@@ -162,9 +185,10 @@ async function handleMessage(msg) {
   const heard = source === 'telegram_voice' ? `Hørt: "${content}"\n` : ''
   let reply = heard + 'Fanget og gemt.'
   let classification = null
+  let area = null
   try {
     classification = await classify(content)
-    const area = VALID_AREAS.includes(classification.area) ? classification.area : null
+    area = VALID_AREAS.includes(classification.area) ? classification.area : null
     await supabase
       .from('raw_captures')
       .update({ area, classification, processed: true })
@@ -173,6 +197,25 @@ async function handleMessage(msg) {
     reply = heard + `Fanget og gemt. (${area || 'ukategoriseret'}, ${classification.type})`
   } catch (e) {
     console.error('  klassificering fejlede (ikke kritisk):', e.message)
+  }
+
+  // Auto-embed til memory_chunks. Best-effort: ved fejl logges og fortsættes - capture er stadig gemt.
+  // Embeddes selv hvis klassificering fejlede, så indholdet er søgbart uanset.
+  try {
+    await storeChunk({
+      content,
+      source_type: 'raw_capture',
+      source_id: data.id,
+      area,
+      metadata: {
+        source,
+        summary: classification?.summary || null,
+        type: classification?.type || null,
+      },
+    })
+    console.log('  embeddet til memory_chunks')
+  } catch (e) {
+    console.error('  embed fejlede (ikke kritisk):', e.message)
   }
 
   // Hvis det er en aftale, prøv at lave et kalender-forslag med veto-vindue.
