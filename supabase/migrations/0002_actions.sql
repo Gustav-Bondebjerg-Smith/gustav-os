@@ -4,6 +4,7 @@
 --
 -- State machine for actions:
 --   proposed   - forslag sendt til Telegram, venter på veto eller veto-vindue udløb
+--   executing  - worker/cron har claimet handlingen og er ved at udføre den
 --   executed   - handlingen udført (timeout uden veto, eller eksplicit 'ja')
 --   vetoed     - Gustav skrev 'nej' inden veto-vinduet udløb
 --   failed     - forsøgte at udføre, men fejlede (fx Google API-fejl)

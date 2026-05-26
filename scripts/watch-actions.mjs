@@ -1,6 +1,7 @@
 // Watcher der udfører foreslåede actions hvis veto-vinduet er udløbet uden veto.
 // Spørger actions-tabellen for status='proposed' AND veto_deadline < now(), udfører via calendar-write,
-// opdaterer status til 'executed' eller 'failed', logger i audit_log og sender Telegram-bekræftelse.
+// claimer hver action med status='executing', opdaterer derefter til 'executed' eller 'failed',
+// logger i audit_log og sender Telegram-bekræftelse.
 //
 // Kør én gang:   node scripts/watch-actions.mjs --once
 // Kør løbende:   node scripts/watch-actions.mjs   (tjekker hvert 30. sek, Ctrl+C stopper)
@@ -45,14 +46,34 @@ async function runOnce() {
   if (!due.length) return 0
 
   console.log(`Fandt ${due.length} action(s) klar til udførelse.`)
-  for (const a of due) {
+  for (const candidate of due) {
+    const startedAt = new Date().toISOString()
+    const { data: claimedRows, error: claimErr } = await supabase
+      .from('actions')
+      .update({
+        status: 'executing',
+        processing_started_at: startedAt,
+        result: { started_at: startedAt },
+      })
+      .eq('id', candidate.id)
+      .eq('status', 'proposed')
+      .select('id, type, payload, source_capture_id')
+      .limit(1)
+    if (claimErr) throw claimErr
+
+    const a = claimedRows?.[0]
+    if (!a) {
+      console.log(`- ${candidate.id}: allerede claimed af en anden worker, skipper`)
+      continue
+    }
+
     console.log(`- ${a.id}: ${a.type} "${a.payload?.summary}"`)
     try {
       if (a.type !== 'calendar_insert') throw new Error(`Ukendt action-type: ${a.type}`)
       const ev = await insertEvent(a.payload)
       const result = { event_id: ev.id, html_link: ev.htmlLink }
       await supabase.from('actions').update({
-        status: 'executed', executed_at: new Date().toISOString(), result,
+        status: 'executed', executed_at: new Date().toISOString(), processing_started_at: null, result,
       }).eq('id', a.id)
       await supabase.from('audit_log').insert({
         action: 'calendar_insert',
@@ -67,7 +88,7 @@ async function runOnce() {
       const errMsg = String(e.message || e)
       console.error('  -> failed:', errMsg)
       await supabase.from('actions').update({
-        status: 'failed', result: { error: errMsg },
+        status: 'failed', processing_started_at: null, result: { error: errMsg },
       }).eq('id', a.id)
       await supabase.from('audit_log').insert({
         action: 'calendar_insert',

@@ -1,7 +1,7 @@
 // /captures - liste over alle raw_captures fra Telegram (tekst + voice).
 // Server component der henter direkte fra Supabase.
 import { getSupabase } from '@/lib/supabase'
-import { fmtDate } from '@/lib/ask'
+import { fmtDate } from '@/lib/format'
 
 type Capture = {
   id: string

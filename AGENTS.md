@@ -24,6 +24,13 @@ Denne fil er den fælles, værktøjs-uafhængige kontekst for Gustav OS. Læs de
 - Efterlad altid repoet i en kørende, brugbar tilstand. Opdatér `STATUS.md` til sidst.
 - Medicinske fagtermer på latin som udgangspunkt, ellers terminologien fra hans uni-materiale.
 
+## Overdragelsesrutine
+- Start med `STATUS.md`, derefter `README.md`, derefter relevante filer i `app/`, `lib/`, `scripts/` og `supabase/migrations/`.
+- Læs ikke `.env.local` medmindre opgaven eksplicit kræver det. Brug `.env.local.example` til env-overblik.
+- Kør som minimum `npx tsc --noEmit` og `npm run lint` efter kodeændringer.
+- Opdatér `STATUS.md` før du stopper: hvad ændrede du, hvilke checks kørte du, og hvad er næste konkrete skridt.
+- Commit aldrig uden Gustavs eksplicitte ja.
+
 ## Pet peeves (lad være)
 - Sig ikke "great question" eller tilsvarende fyld.
 - Omstrukturér ikke hans filer uden at spørge først.

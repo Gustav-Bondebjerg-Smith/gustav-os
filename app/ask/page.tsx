@@ -5,7 +5,7 @@
 import { useActionState } from 'react'
 import { askAction } from './actions'
 import { initialAskState } from './state'
-import { fmtDate } from '@/lib/ask'
+import { fmtDate } from '@/lib/format'
 
 export default function AskPage() {
   const [state, action, pending] = useActionState(askAction, initialAskState)

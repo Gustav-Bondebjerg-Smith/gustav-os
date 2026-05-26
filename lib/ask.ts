@@ -2,51 +2,12 @@
 // CLI'en lever videre uændret. Når vi vil eliminere drift kan scripts/ask.mjs
 // senere refactoreres til at importere herfra via dynamic import.
 import { getSupabase } from './supabase'
+import { embedText } from './memory'
+import { fmtDate } from './format'
+import type { AskResult, Chunk } from './ask-types'
 
 const ASK_MODEL = 'claude-sonnet-4-6'
-const EMBED_MODEL = 'text-embedding-3-small'
 const MATCH_COUNT = 8
-
-export type Chunk = {
-  id: string
-  content: string
-  source_type: string
-  source_id: string
-  area: string | null
-  metadata: Record<string, unknown> | null
-  created_at: string
-  similarity: number
-}
-
-export type AskResult = {
-  answer: string
-  sources: Chunk[]
-}
-
-const WEEKDAYS = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør']
-export function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return `${WEEKDAYS[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1} ${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-// Embedder en tekst via OpenAI. Returnerer 1536-dim float-array.
-async function embedText(text: string): Promise<number[]> {
-  if (!text || typeof text !== 'string') throw new Error('embedText: text skal være en ikke-tom string')
-  const r = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
-  })
-  if (!r.ok) throw new Error(`OpenAI embeddings HTTP ${r.status}: ${await r.text()}`)
-  const j = await r.json()
-  const vec = j.data?.[0]?.embedding
-  if (!Array.isArray(vec) || vec.length !== 1536) throw new Error('embedText: uventet svar fra OpenAI')
-  return vec
-}
 
 async function searchMemory(query: string, matchCount = MATCH_COUNT): Promise<Chunk[]> {
   const embedding = await embedText(query)

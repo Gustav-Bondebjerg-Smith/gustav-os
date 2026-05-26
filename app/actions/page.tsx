@@ -1,12 +1,12 @@
 // /actions - liste over auto-handlinger (kalender-forslag og deres status).
 // Server component. Sidestykke til show-actions.mjs.
 import { getSupabase } from '@/lib/supabase'
-import { fmtDate } from '@/lib/ask'
+import { fmtDate } from '@/lib/format'
 
 type ActionRow = {
   id: string
   type: string
-  status: 'proposed' | 'executed' | 'vetoed' | 'failed'
+  status: 'proposed' | 'executing' | 'executed' | 'vetoed' | 'failed'
   payload: {
     summary?: string
     start?: string
@@ -22,6 +22,7 @@ type ActionRow = {
 
 const STATUS_STYLES: Record<string, string> = {
   proposed: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100',
+  executing: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100',
   executed: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100',
   vetoed: 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
   failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100',

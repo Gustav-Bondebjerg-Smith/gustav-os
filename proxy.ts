@@ -80,11 +80,10 @@ export async function proxy(request: NextRequest) {
   return response
 }
 
-// Match alt undtagen statiske assets, image-optimization og favicon.
-// /api/* gates ikke her - de skal selv validere (fx Telegram webhook
-// med shared secret kommer i led 2).
+// Match alt undtagen API-routes, statiske assets, image-optimization og favicon.
+// /api/* gates ikke her - de skal selv validere (fx Telegram webhook med shared secret).
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 }
