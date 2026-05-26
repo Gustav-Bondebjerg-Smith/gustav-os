@@ -1,9 +1,9 @@
 # Gustav OS - STATUS
 
-Sidst opdateret: 2026-05-26 (Fase 6)
+Sidst opdateret: 2026-05-26 (Fase 7 led 1)
 
 ## Hvor er vi
-Fase 6 FÆRDIG. Gustav OS har nu en webflade. Next.js 16 dashboard på `localhost:3000` med tre sider: `/captures` (alle Telegram-beskeder med område/type/kilde), `/actions` (kalender-forslag med proposed/executed/vetoed/failed-status og link til Google Calendar) og `/ask` (samme funktion som CLI/Telegram, med form + pending-state). Server components læser direkte fra Supabase, server action håndterer `/ask`. Ingen auth endnu - localhost-only er beskyttelsen. Auth + Vercel-deploy ligger i Fase 7. Næste milepæl: Fase 7 (cron + deploy + auth) - eller iteration på dashboardet (balance-view, filtre, dashboard-overblik).
+Fase 7 led 1 (auth) FÆRDIG. Dashboardet er nu gated bag Supabase Auth med magic link og en `ALLOWED_EMAIL`-whitelist. Alle dashboard-routes (`/`, `/captures`, `/actions`, `/ask`) redirecter til `/login` hvis ingen session. Fremmede emails får ikke engang et magic link sendt (silent rejection - lækker ikke hvem der har adgang). `proxy.ts` (Next.js 16 omdøbte `middleware.ts` til `proxy.ts`) refresher session-cookies på hver navigation. Service_role-klienten er nu låst med `'server-only'` så den fanges hvis vi ved en fejl importerer den til et client component. Klar til led 2 (Telegram webhook), led 3 (serverless cron), led 4 (Vercel deploy).
 
 ## Færdigt
 - Milestone 0: Next.js 15 + TS + Tailwind, git, secrets gitignored, CLAUDE.md, memory.
@@ -14,8 +14,9 @@ Fase 6 FÆRDIG. Gustav OS har nu en webflade. Next.js 16 dashboard på `localhos
 - Fase 4 (auto-handlinger + Telegram-veto): Google service account opgraderet til "Make changes to events". Ny `actions`-tabel (state machine: proposed/executed/vetoed/failed). `scripts/calendar-write.mjs` indsætter + sletter events (scope `calendar.events`). `scripts/propose.mjs` lader Haiku udlede {summary, start, end, location?} fra capture-tekst, eller returnere null hvis tiden er vag. `scripts/telegram-poll.mjs` udvidet: ved type=aftale sendes forslag, ved enkelt-veto-ord markeres nyeste proposed action som vetoed. `scripts/watch-actions.mjs` udfører forslag efter veto-vindue, opdaterer status, logger i `audit_log` med statusserne `applied`/`vetoed`/`failed`. Default veto-vindue 10 min, kan sættes lavere under test via `VETO_MINUTES` env.
 - Fase 5 (memory/ask): Ny migration `0003_memory_search.sql` med `search_memory(query_embedding, match_count, filter_area)` RPC. `scripts/embed.mjs` (delt modul: `embedText` + idempotent `storeChunk`, OpenAI text-embedding-3-small). `scripts/embed-captures.mjs` backfilder eksisterende raw_captures. `scripts/ask.mjs` embedder spørgsmål, kalder RPC, sender top-8 chunks + spørgsmål til Claude Sonnet 4.6 med Gustav OS-personaen, returnerer svar med citerede kilder. `telegram-poll.mjs` udvidet: `/ask <spørgsmål>` på Telegram + auto-embed efter hver capture (best-effort, blokerer ikke capture-gemning hvis OpenAI fejler). Idempotens via UNIQUE (source_type, source_id)-tjek i `storeChunk` så backfill kan køres flere gange.
 - Fase 6 (dashboard): Next.js 16 (Turbopack) på localhost:3000. Top-nav layout (`app/layout.tsx`) med Captures/Actions/Ask. `/captures` viser raw_captures (område-badge, type, kilde, timestamp, content). `/actions` viser actions med status-badge (proposed=amber, executed=grøn, vetoed=grå, failed=rød) + Google Calendar-link når executed. `/ask` er client component med `useActionState`, kalder server action `askAction` der bruger `lib/ask.ts` (TS-port af scripts/ask.mjs). `lib/supabase.ts` har service_role-klient (RLS bypass; OK fordi localhost-only). Ingen auth - tilføjes i Fase 7 ved deploy. Server-action-faldgrube: `'use server'`-filer må kun eksportere async funktioner; types/constants ligger i separat fil (`app/ask/state.ts`).
+- Fase 7 led 1 (auth): Supabase Auth med magic link og ÉN whitelistet email (`ALLOWED_EMAIL` i `.env.local`). `proxy.ts` (Next.js 16 file convention; afløser `middleware.ts` fra v15) gater alle non-public routes - redirecter unauth til `/login`, sender authed brugere væk fra `/login` til `/captures`. `lib/supabase-server.ts` er anon-klient med cookies (server components, server actions, route handlers). `lib/supabase-browser.ts` er anon-klient til client components. `lib/supabase.ts` er nu mærket `'server-only'` så service_role-importen knækker buildet hvis nogen ved en fejl trækker den ind i et client component. `/login` er form med magic link, fremmede emails får "Tjek din inbox" uden at der faktisk sendes noget (silent rejection). `/auth/callback` exchanger code, tjekker whitelist + signer ud hvis fremmed, redirecter til `/captures`. `/auth/signout` er POST-only (GET = 405) og redirecter 303 til `/login`. `askAction` i `/ask` har sin egen auth-guard fordi Next.js docs advarer om at proxy-matcher kan smutte server actions. Top-nav viser nu logget-ind email + "Log ud"-knap. Layoutet skjuler nav på `/login` og `/auth/*`. Smoke-test: alle gated routes returnerer 307 til `/login` uden session, `/login` returnerer 200, `POST /auth/signout` returnerer 303. `npx tsc --noEmit` ren.
 - scripts/: load-env, test-db, test-keys, list-models, telegram-poll, classify, transcribe, reclassify, show-captures, calendar, balance, calendar-write, propose, watch-actions, show-actions, embed, embed-captures, ask. Kør som `node scripts/<navn>.mjs`.
-- lib/: `supabase.ts` (server-side klient), `ask.ts` (ask-funktion til dashboardet, TS-port af scripts/ask.mjs).
+- lib/: `supabase.ts` (service_role, `server-only`, til interne flows uden bruger-session), `supabase-server.ts` (anon + cookies, til server components/actions/handlers), `supabase-browser.ts` (anon, til client components), `ask.ts` (ask-funktion til dashboardet, TS-port af scripts/ask.mjs).
 - Portable kontekst (arbejdsform, persona, profil, faldgruber): ligger i `AGENTS.md`. Læses af Claude Code (via `@AGENTS.md`-import i `CLAUDE.md`) OG andre værktøjer (Codex, Cursor osv.). Skifter du værktøj: bed det nye læse `STATUS.md` + `AGENTS.md` først.
 
 ## Sådan bruger du det nu
@@ -27,16 +28,20 @@ Fase 6 FÆRDIG. Gustav OS har nu en webflade. Next.js 16 dashboard på `localhos
 - Backfill embeddings hvis polleren har været nede: `node scripts/embed-captures.mjs` (idempotent, kun nye behandles).
 - Balance-rapport: `node scripts/balance.mjs` (eller `--telegram` for at få den på telefonen).
 - Efterklassificer ubehandlede captures: `node scripts/reclassify.mjs`.
-- Dashboard: `env -u ANTHROPIC_API_KEY npm run dev`, åbn `http://localhost:3000`. Captures/Actions/Ask i top-nav.
+- Dashboard: `env -u ANTHROPIC_API_KEY npm run dev`, åbn `http://localhost:3000`. Første gang: log ind via magic link (din `ALLOWED_EMAIL`). Magic link havner i indbakken (tjek spam hvis intet kommer; Supabase Free har 3-4 mails/time rate limit). Captures/Actions/Ask i top-nav, "Log ud" øverst til højre.
 - Polleren + watcheren kører kun mens terminalen kører. Altid-online kommer ved deploy til Vercel (webhook + cron).
 
-## Næste: Fase 7 (deploy + cron) eller v2 af dashboardet
-Fase 7: Vercel-deploy + Supabase Auth (magic link) + serverless cron til proaktive briefings (morgen-overblik, aften-refleksion, mønster-flag). Webhook erstatter long-polling så capture er altid-online. Cron + actions-watcher skal også overleve serverless-miljøet.
-Dashboard v2 (kan ligge før eller efter Fase 7): balance-view, dashboard-overblik på root, filtre/søgning i captures, "ny capture"-felt direkte fra web.
+## Næste: Fase 7 led 2 (Telegram webhook) → led 3 (cron) → led 4 (Vercel deploy)
+Fase 7 er bevidst delt op i 4 led, ledet i tur, fordi det er for stort til én sprint:
+- Led 1 (auth): FÆRDIG. Magic link + proxy + whitelist.
+- Led 2 (webhook): `/api/telegram` route der erstatter long-polling. Signatur-tjek med `TELEGRAM_WEBHOOK_SECRET`. Stadig kun whitelisted chat_id der kan poste. Long-polling-scriptet bliver dead code når webhook er live, men beholdes til lokal udvikling.
+- Led 3 (cron): Vercel Cron til watch-actions (afløser den lokale loop) + proaktive briefings (morgen-overblik, aften-refleksion, mønster-flag).
+- Led 4 (deploy): Vercel-projekt, env-variables, Supabase Auth Site URL/Redirect URLs sat til prod-domænet.
+Dashboard v2 (kan ligge før eller efter): balance-view, dashboard-overblik på root, filtre/søgning i captures, "ny capture"-felt direkte fra web.
 Sidenote: tasks-tabellen er stadig tom. Når der kommer faktisk taskhåndtering, skal embed-captures udvides til også at embedde tasks + daily_logs + udvalgte calendar-events. Schema er klar (memory_chunks.source_type understøtter alt).
 
 ## Faser
-0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7 Deploy+cron [næste]
+0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7a Auth [done] | 7b Webhook [næste] | 7c Cron | 7d Deploy
 
 ## Noter / faldgruber
 - VIGTIGT: Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` der skygger for `.env.local`. Kør scripts som `node scripts/x.mjs` (bruger `load-env.mjs`). Kør dev-server som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal virke lokalt.
@@ -49,5 +54,9 @@ Sidenote: tasks-tabellen er stadig tom. Når der kommer faktisk taskhåndtering,
 - PostgREST schema-cache: efter nye funktioner/tabeller skal cachen reloades. Kør `notify pgrst, 'reload schema';` i SQL Editor hvis du får PGRST202 ("Could not find the function...").
 - Embed-modellen er `text-embedding-3-small` (1536 dim). Skifter du model, skal `memory_chunks.embedding`-kolonnen recreates med ny dimension OG alle eksisterende rækker re-embeddes. Lås modellen indtil det giver mening.
 - Next.js 16 server actions: filer med `'use server'` i toppen må KUN eksportere async funktioner. Konstanter og type-exports skal ligge i separat fil ellers serialiseres de som Server References og dukker som `undefined` op på klienten.
-- Dashboard er localhost-only og bruger service_role-nøglen direkte (`lib/supabase.ts`). Det er sikkert fordi porten ikke er eksponeret. Når vi deployer i Fase 7 SKAL vi tilføje Supabase Auth + skifte til anon-klient + RLS-policies, ellers er hele DB'en åben for nettet.
-- git: Fase 1+2 committet (db1e152). Fase 3 committet (0e5e466). Fase 4 committet (00ad3f3 + polering 02f1736). Fase 5 committet (4ffe089). Fase 6 committes lige efter denne STATUS-opdatering. Claude committer kun når Gustav beder om det.
+- Next.js 16 file convention: `middleware.ts` er deprecated, brug `proxy.ts` med eksporteret funktion `proxy()`. Default runtime er Node.js (ikke Edge). Codemod findes: `npx @next/codemod@canary middleware-to-proxy .`.
+- Server actions er IKKE separate routes i proxy-chain-pipelinen; de POST'er til den route hvor de bor. En matcher-ændring eller refaktor der flytter en server action kan silently fjerne proxy-coverage. Derfor verificerer `askAction` selv at brugeren er logget ind (`getServerSupabase` + `getUser` + whitelist). Gør det samme i alle fremtidige server actions.
+- Auth: brug `getUser()` (round-trip til Supabase) eller `getClaims()` (lokal JWT-validering) til autorisationsbeslutninger. `getSession()` læser kun fra cookies og må IKKE bruges til at gate noget (en angriber kan crafte en cookie).
+- Supabase magic link rate limit: Free tier sender 3-4 mails pr. time fra deres SMTP. For test-loops: log ind én gang, brug "Log ud"-knappen, log ind igen - cookies invalideres uden ny mail.
+- Service_role-klienten (`lib/supabase.ts`) er nu mærket med `import 'server-only'`. Hvis nogen importerer den til et client component knækker buildet med det samme. Brug `getServerSupabase()` fra `lib/supabase-server.ts` til alt der har med en bruger at gøre.
+- git: Fase 1+2 committet (db1e152). Fase 3 committet (0e5e466). Fase 4 committet (00ad3f3 + polering 02f1736). Fase 5 committet (4ffe089). Fase 6 committet (cf305ba). Fase 7 led 1 committes når Gustav nikker. Claude committer kun når Gustav beder om det.
