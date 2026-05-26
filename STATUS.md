@@ -1,34 +1,36 @@
 # Gustav OS - STATUS
 
-Sidst opdateret: 2026-05-25
+Sidst opdateret: 2026-05-26
 
 ## Hvor er vi
-Fase 2 FÆRDIG. Send tekst ELLER voicenote til @PersonalOSGustav_bot -> (voice transskriberes med Whisper) -> gemmes i `raw_captures` -> Claude Haiku sætter område + type -> botten svarer "Fanget og gemt. (område, type)". Kører lokalt via long-polling. Næste milepæl: Fase 3 (kalender + balance), den første rigtige synlige livsforbedring.
+Fase 3 FÆRDIG. Den første rigtige synlige forbedring er leveret: en balance-rapport over de sidste 14 dage, ankret i din faktiske Google Calendar, skrevet i Gustav OS-stemmen. Koden regner præcise timer pr. kategori, Claude Sonnet 4.6 kategoriserer hvert event og skriver vurderingen + 1-2 konkrete justeringer. Levering: terminal eller direkte på Telegram. Næste milepæl: Fase 4 (auto-handlinger med Telegram-veto).
 
 ## Færdigt
 - Milestone 0: Next.js 15 + TS + Tailwind, git, secrets gitignored, CLAUDE.md, memory.
 - Fase 1: Supabase forbundet, schema kørt (6 tabeller + pgvector + RLS), round-trip verificeret.
-- Nøgler: Anthropic + OpenAI + Telegram valideret. Bot = @PersonalOSGustav_bot, LÅST til Gustav (TELEGRAM_CHAT_ID sat).
-- Fase 2 (tekst + voice): long-polling capture. Voice -> Whisper (whisper-1, dansk). Klassificering med Claude Haiku. Område: personlig/studie/arbejde. Type: opgave/note/ide/aftale. Capture er helligt: råindhold gemmes FØR klassificering, så data aldrig tabes hvis Claude/Whisper fejler.
-- scripts/: load-env.mjs, test-db.mjs, test-keys.mjs, list-models.mjs, telegram-poll.mjs, classify.mjs, transcribe.mjs, reclassify.mjs, show-captures.mjs. Kør som `node scripts/<navn>.mjs`.
+- Nøgler: Anthropic + OpenAI + Telegram + Google service account valideret. Telegram-bot LÅST til Gustav (`TELEGRAM_CHAT_ID` sat).
+- Fase 2 (tekst + voice): long-polling capture. Voice -> Whisper (whisper-1, dansk). Klassificering med Claude Haiku. Område: personlig/studie/arbejde. Type: opgave/note/ide/aftale. Capture er helligt: råindhold gemmes FØR klassificering.
+- Fase 3 (kalender + balance): Google service account (kun læseadgang), primær kalender delt med robotten. `scripts/calendar.mjs` henter events via JWT-auth (`google-auth-library`). `scripts/balance.mjs` regner præcise timer pr. kategori i kode, Claude Sonnet 4.6 kategoriserer + skriver rapporten i personaen. Levering: terminal eller `--telegram`.
+- scripts/: load-env, test-db, test-keys, list-models, telegram-poll, classify, transcribe, reclassify, show-captures, calendar, balance. Kør som `node scripts/<navn>.mjs`.
+- Portable kontekst (arbejdsform, persona, profil, faldgruber): ligger i `AGENTS.md`. Læses af Claude Code (via `@AGENTS.md`-import i `CLAUDE.md`) OG andre værktøjer (Codex, Cursor osv.). Skifter du værktøj: bed det nye læse `STATUS.md` + `AGENTS.md` først.
 
 ## Sådan bruger du det nu
-- Lyt efter beskeder: `node scripts/telegram-poll.mjs` (Ctrl+C stopper). Én runde: tilføj `--once`.
-- Se hvad hjernen har fanget: `node scripts/show-captures.mjs`.
+- Capture (tekst + voice): `node scripts/telegram-poll.mjs` (Ctrl+C stopper, `--once` for én runde).
+- Se dine captures: `node scripts/show-captures.mjs`.
+- Balance-rapport: `node scripts/balance.mjs` (eller `node scripts/balance.mjs --telegram` for at få den på telefonen).
 - Efterklassificer ubehandlede captures: `node scripts/reclassify.mjs`.
-- Bemærk: polleren kører kun mens terminalen kører. Altid-online kommer ved deploy til Vercel (webhook).
+- Polleren kører kun mens terminalen kører. Altid-online kommer ved deploy til Vercel (webhook).
 
-## Næste: Fase 3 (kalender + balance)
-Mål: "hvordan ser min balance ud de sidste 14 dage?" -> konkret svar bygget på din faktiske Google Calendar + din profil. Første rigtige synlige forbedring.
-Logistik Gustav skal gøre (jeg guider trin for trin): oprette en Google Cloud service account + dele din kalender med den. Det er den eneste nye konto-opsætning.
-Trin: (1) Google service account + credentials i .env.local. (2) læs kalender-events for sidste 14 dage. (3) Claude-analyse -> balance-rapport (studie/arbejde/hvile/telefon-mønstre). (4) hent rapporten via Telegram eller terminal.
+## Næste: Fase 4 (auto-handlinger + Telegram-veto)
+Mål: systemet udfører begrænsede handlinger på dine vegne (skrive aftaler i kalender, oprette opgaver, sende påmindelser) med et veto-vindue via Telegram. Hver handling logges i `audit_log`. Service account-permission opgraderes fra "See all event details" til "Make changes to events" når vi når dertil.
 
 ## Faser
-0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done: tekst+voice+klassificering] | 3 Calendar+balance [næste] | 4 Auto-handlinger | 5 Memory/ask | 6 Dashboard | 7 Cron
+0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [næste] | 5 Memory/ask | 6 Dashboard | 7 Cron
 
 ## Noter / faldgruber
-- VIGTIGT: Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` sat. Node's `--env-file` overskriver den ikke. Derfor: kør scripts som `node scripts/x.mjs` (bruger `load-env.mjs` der tvinger .env.local igennem). Kør dev-server som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal virke lokalt.
-- npm cache: brug `npm_config_cache=/tmp/gustav-npm-cache` foran npm-installs (root-ejet ~/.npm). Permanent: `sudo chown -R 501:20 ~/.npm`.
-- Deploy senere: skift fra long-polling til webhook på Vercel for altid-online capture (TELEGRAM_WEBHOOK_SECRET ligger klar i .env.local).
-- Whisper: ~95% nøjagtig på dansk, enkelte ord kan blive forkerte. Råtekst gemmes altid, så intet går tabt.
-- git: intet committet endnu (Claude committer kun når Gustav beder om det).
+- VIGTIGT: Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` der skygger for `.env.local`. Kør scripts som `node scripts/x.mjs` (bruger `load-env.mjs`). Kør dev-server som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal virke lokalt.
+- npm cache: brug `npm_config_cache=/tmp/gustav-npm-cache` foran npm-installs (root-ejet `~/.npm`). Permanent: `sudo chown -R 501:20 ~/.npm`.
+- Deploy senere: skift fra long-polling til webhook på Vercel for altid-online capture (`TELEGRAM_WEBHOOK_SECRET` ligger klar i `.env.local`).
+- Whisper: ~95% nøjagtig på dansk. Råtekst gemmes altid, så intet går tabt.
+- Google service account: nøgle ligger på én linje i `.env.local` med tekst-`\n`. Fold ud med `.replace(/\\n/g, '\n')` før brug (sker i `calendar.mjs`). Den løse JSON-nøglefil er slettet; værdierne lever kun i `.env.local`.
+- git: Fase 1+2 committet (db1e152). Fase 3 committes lige efter denne STATUS-opdatering. Claude committer kun når Gustav beder om det.

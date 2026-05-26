@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.local.example
 
+# personlige nøgle-backups (ligger uden for repoet, men ignoreres hvis de flyttes ind)
+API.txt
+
 # vercel
 .vercel
 
