@@ -7,11 +7,22 @@ import './load-env.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { classify, VALID_AREAS } from './classify.mjs'
 import { transcribeAudio } from './transcribe.mjs'
+import { proposeCalendarEvent, formatProposal } from './propose.mjs'
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const ALLOWED = process.env.TELEGRAM_CHAT_ID // valgfri lås: kun denne chat accepteres
 const API = `https://api.telegram.org/bot${TOKEN}`
 const ONCE = process.argv.includes('--once')
+// Veto-vindue. Default 10 min, men kan sættes lavere under test (fx VETO_MINUTES=1).
+const VETO_MINUTES = Number(process.env.VETO_MINUTES) || 10
+
+// Ord der tolkes som "veto" når de står ALENE i en besked (ellers er det normalt indhold).
+const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'cancel', 'skip', 'no'])
+function isVetoMessage(text) {
+  if (!text) return false
+  const normalized = text.trim().toLowerCase().replace(/[.,!?]/g, '')
+  return VETO_WORDS.has(normalized)
+}
 
 if (!TOKEN) { console.error('Mangler TELEGRAM_BOT_TOKEN i .env.local'); process.exit(1) }
 
@@ -28,6 +39,30 @@ async function tg(method, body) {
     body: JSON.stringify(body),
   })
   return r.json()
+}
+
+// Find action der skal vetoes. Hvis besked er reply til en proposal-besked, match præcis. Ellers tag nyeste proposed inden for veto-deadline.
+async function findVetoTarget(replyToMsgId) {
+  const nowIso = new Date().toISOString()
+  if (replyToMsgId) {
+    const { data, error } = await supabase
+      .from('actions')
+      .select('id, payload, telegram_message_id')
+      .eq('status', 'proposed')
+      .eq('telegram_message_id', replyToMsgId)
+      .limit(1)
+    if (error) { console.error('findVetoTarget (reply) DB-fejl:', error.message); return null }
+    if (data?.[0]) return data[0]
+  }
+  const { data, error } = await supabase
+    .from('actions')
+    .select('id, payload, telegram_message_id')
+    .eq('status', 'proposed')
+    .gte('veto_deadline', nowIso)
+    .order('created_at', { ascending: false })
+    .limit(1)
+  if (error) { console.error('findVetoTarget DB-fejl:', error.message); return null }
+  return data?.[0] || null
 }
 
 // Henter en voicenote fra Telegram og transskriberer den til tekst.
@@ -52,6 +87,30 @@ async function handleMessage(msg) {
   }
   if (!ALLOWED) {
     console.log(`>> Din chat-id er ${chatId}. Sæt TELEGRAM_CHAT_ID=${chatId} i .env.local for at låse botten til dig.`)
+  }
+
+  // Veto: hvis beskeden er et enkelt veto-ord, ramt-trim "nej"/"stop"/... → vetoé nyeste proposed action.
+  // Reply-to en specifik forslags-besked vetoer netop dén. Beskeden gemmes IKKE som capture.
+  if (msg.text && isVetoMessage(msg.text)) {
+    const target = await findVetoTarget(msg.reply_to_message?.message_id)
+    if (!target) {
+      await tg('sendMessage', { chat_id: chatId, text: 'Ingen forslag at vetoe lige nu.' })
+      return
+    }
+    const { error: updErr } = await supabase
+      .from('actions')
+      .update({ status: 'vetoed', vetoed_at: new Date().toISOString() })
+      .eq('id', target.id)
+    if (updErr) { console.error('  veto-update fejl:', updErr.message) }
+    await supabase.from('audit_log').insert({
+      action: 'calendar_insert',
+      payload: target.payload,
+      status: 'vetoed',
+      reason: `veto via Telegram: "${msg.text}"`,
+    })
+    await tg('sendMessage', { chat_id: chatId, text: `Vetoet: "${target.payload.summary}". Skrives ikke i kalenderen.` })
+    console.log(`Vetoed action ${target.id}: ${target.payload.summary}`)
+    return
   }
 
   // Kommandoer (fx /start) gemmes ikke
@@ -102,19 +161,54 @@ async function handleMessage(msg) {
   // Best-effort klassificering. Råindholdet er gemt ovenfor, så vi mister aldrig data hvis Claude fejler.
   const heard = source === 'telegram_voice' ? `Hørt: "${content}"\n` : ''
   let reply = heard + 'Fanget og gemt.'
+  let classification = null
   try {
-    const c = await classify(content)
-    const area = VALID_AREAS.includes(c.area) ? c.area : null
+    classification = await classify(content)
+    const area = VALID_AREAS.includes(classification.area) ? classification.area : null
     await supabase
       .from('raw_captures')
-      .update({ area, classification: c, processed: true })
+      .update({ area, classification, processed: true })
       .eq('id', data.id)
-    console.log(`  klassificeret: area=${area} type=${c.type} - ${c.summary}`)
-    reply = heard + `Fanget og gemt. (${area || 'ukategoriseret'}, ${c.type})`
+    console.log(`  klassificeret: area=${area} type=${classification.type} - ${classification.summary}`)
+    reply = heard + `Fanget og gemt. (${area || 'ukategoriseret'}, ${classification.type})`
   } catch (e) {
     console.error('  klassificering fejlede (ikke kritisk):', e.message)
   }
-  await tg('sendMessage', { chat_id: chatId, text: reply })
+
+  // Hvis det er en aftale, prøv at lave et kalender-forslag med veto-vindue.
+  // Hvis forslag lykkes: erstat den almindelige bekræftelse med forslagsbeskeden.
+  // Hvis ikke: send almindelig bekræftelse som før.
+  let proposal = null
+  if (classification?.type === 'aftale') {
+    try {
+      proposal = await proposeCalendarEvent(content)
+    } catch (e) {
+      console.error('  forslag fejlede (ikke kritisk):', e.message)
+    }
+  }
+
+  if (proposal) {
+    const proposalText = formatProposal(proposal, VETO_MINUTES)
+    const sent = await tg('sendMessage', { chat_id: chatId, text: proposalText })
+    if (sent.ok) {
+      const deadline = new Date(Date.now() + VETO_MINUTES * 60 * 1000).toISOString()
+      const { error: actErr } = await supabase.from('actions').insert({
+        type: 'calendar_insert',
+        payload: proposal,
+        source_capture_id: data.id,
+        telegram_message_id: sent.result.message_id,
+        veto_deadline: deadline,
+      })
+      if (actErr) console.error('  forslag kunne ikke gemmes som action:', actErr.message)
+      else console.log(`  forslag oprettet: ${proposal.summary} (veto til ${deadline})`)
+    } else {
+      console.error('  proposal-besked kunne ikke sendes:', JSON.stringify(sent))
+      // Hvis Telegram-send fejlede, så send i det mindste den almindelige bekræftelse
+      await tg('sendMessage', { chat_id: chatId, text: reply })
+    }
+  } else {
+    await tg('sendMessage', { chat_id: chatId, text: reply })
+  }
 }
 
 async function poll() {
