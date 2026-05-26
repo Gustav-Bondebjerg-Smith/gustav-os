@@ -60,7 +60,8 @@ async function runOnce() {
         status: 'applied',
         reason: `udført efter veto-vindue (action ${a.id})`,
       })
-      await tgSend(`Skrevet i kalender: "${a.payload.summary}"`)
+      const link = ev.htmlLink ? `\n${ev.htmlLink}` : ''
+      await tgSend(`Skrevet i kalender: "${a.payload.summary}"${link}`)
       console.log('  -> executed')
     } catch (e) {
       const errMsg = String(e.message || e)

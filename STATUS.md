@@ -12,13 +12,14 @@ Fase 4 FÆRDIG. Systemet kan nu skrive aftaler i din kalender PÅ EGNE BEN, med 
 - Fase 2 (tekst + voice): long-polling capture. Voice -> Whisper (whisper-1, dansk). Klassificering med Claude Haiku. Område: personlig/studie/arbejde. Type: opgave/note/ide/aftale. Capture er helligt: råindhold gemmes FØR klassificering.
 - Fase 3 (kalender + balance): Google service account (kun læseadgang), primær kalender delt med robotten. `scripts/calendar.mjs` henter events via JWT-auth (`google-auth-library`). `scripts/balance.mjs` regner præcise timer pr. kategori i kode, Claude Sonnet 4.6 kategoriserer + skriver rapporten i personaen. Levering: terminal eller `--telegram`.
 - Fase 4 (auto-handlinger + Telegram-veto): Google service account opgraderet til "Make changes to events". Ny `actions`-tabel (state machine: proposed/executed/vetoed/failed). `scripts/calendar-write.mjs` indsætter + sletter events (scope `calendar.events`). `scripts/propose.mjs` lader Haiku udlede {summary, start, end, location?} fra capture-tekst, eller returnere null hvis tiden er vag. `scripts/telegram-poll.mjs` udvidet: ved type=aftale sendes forslag, ved enkelt-veto-ord markeres nyeste proposed action som vetoed. `scripts/watch-actions.mjs` udfører forslag efter veto-vindue, opdaterer status, logger i `audit_log` med statusserne `applied`/`vetoed`/`failed`. Default veto-vindue 10 min, kan sættes lavere under test via `VETO_MINUTES` env.
-- scripts/: load-env, test-db, test-keys, list-models, telegram-poll, classify, transcribe, reclassify, show-captures, calendar, balance, calendar-write, propose, watch-actions. Kør som `node scripts/<navn>.mjs`.
+- scripts/: load-env, test-db, test-keys, list-models, telegram-poll, classify, transcribe, reclassify, show-captures, calendar, balance, calendar-write, propose, watch-actions, show-actions. Kør som `node scripts/<navn>.mjs`.
 - Portable kontekst (arbejdsform, persona, profil, faldgruber): ligger i `AGENTS.md`. Læses af Claude Code (via `@AGENTS.md`-import i `CLAUDE.md`) OG andre værktøjer (Codex, Cursor osv.). Skifter du værktøj: bed det nye læse `STATUS.md` + `AGENTS.md` først.
 
 ## Sådan bruger du det nu
 - Capture (tekst + voice): `node scripts/telegram-poll.mjs` (Ctrl+C stopper, `--once` for én runde).
 - Auto-skriv aftaler: kør polleren OG `node scripts/watch-actions.mjs` parallelt i to terminaler. Aftale-beskeder får et Telegram-forslag, og hvis du intet siger inden 10 min, skrives det i kalenderen. Veto med "nej". Hvis watcheren ikke kører, ophobes forslag som proposed og udføres næste gang du starter den.
 - Se dine captures: `node scripts/show-captures.mjs`.
+- Se dine actions (proposed/executed/vetoed/failed): `node scripts/show-actions.mjs`.
 - Balance-rapport: `node scripts/balance.mjs` (eller `--telegram` for at få den på telefonen).
 - Efterklassificer ubehandlede captures: `node scripts/reclassify.mjs`.
 - Polleren + watcheren kører kun mens terminalen kører. Altid-online kommer ved deploy til Vercel (webhook + cron).
