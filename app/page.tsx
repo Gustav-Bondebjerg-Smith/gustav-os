@@ -1,10 +1,17 @@
 // Root - "I dag"-overblik. Tre sektioner: kalender for resten af dagen,
-// proposed actions der venter på veto, og seneste captures. Server component
+// proposed actions der venter (uanset om veto-vindue er løbet ud, fordi
+// cron på Hobby kun kører dagligt), og seneste captures. Server component
 // der henter direkte fra Supabase + Google Calendar.
 import Link from 'next/link'
 import { getSupabase } from '@/lib/supabase'
 import { getEvents, type GoogleCalendarEvent } from '@/lib/calendar'
-import { fmtDate } from '@/lib/format'
+import {
+  fmtDate,
+  fmtRange,
+  fmtDay,
+  startOfTodayCph,
+  endOfTodayCph,
+} from '@/lib/format'
 
 type Capture = {
   id: string
@@ -34,40 +41,16 @@ const AREA_STYLES: Record<string, string> = {
   arbejde: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100',
 }
 
-const WEEKDAYS_SHORT = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør']
-
-function fmtTimeRange(start?: string | null, end?: string | null): string {
-  if (!start || !end) return ''
-  const s = new Date(start)
-  const e = new Date(end)
-  const t1 = `${String(s.getHours()).padStart(2, '0')}.${String(s.getMinutes()).padStart(2, '0')}`
-  const t2 = `${String(e.getHours()).padStart(2, '0')}.${String(e.getMinutes()).padStart(2, '0')}`
-  return `${t1}-${t2}`
+function eventEndIso(ev: GoogleCalendarEvent): string | null {
+  return ev.end?.dateTime || ev.end?.date || null
 }
 
 function fmtEventTime(ev: GoogleCalendarEvent): string {
-  const start = ev.start?.dateTime
-  const end = ev.end?.dateTime
-  if (start && end) return fmtTimeRange(start, end)
+  const s = ev.start?.dateTime
+  const e = ev.end?.dateTime
+  if (s && e) return fmtRange(s, e)
   if (ev.start?.date) return 'hele dagen'
   return ''
-}
-
-function startOfToday(): Date {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d
-}
-
-function endOfToday(): Date {
-  const d = new Date()
-  d.setHours(23, 59, 59, 999)
-  return d
-}
-
-function todayHeadline(): string {
-  const d = new Date()
-  return `${WEEKDAYS_SHORT[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`
 }
 
 export const dynamic = 'force-dynamic'
@@ -76,15 +59,15 @@ export default async function HomePage() {
   const sb = getSupabase()
   const now = new Date()
 
-  // Kalender-events for resten af dagen (fra nu til midnat). Wrappet i
-  // try/catch så Google API-fejl ikke krasher hele forsiden.
+  // Kalender-events for resten af dagen (Copenhagen-tid). Wrappet i try/catch
+  // så Google API-fejl ikke krasher hele forsiden.
   let events: GoogleCalendarEvent[] = []
   let calendarError: string | null = null
   try {
-    events = await getEvents(startOfToday(), endOfToday())
+    events = await getEvents(startOfTodayCph(), endOfTodayCph())
     // Filtrer events der allerede er afsluttet.
     events = events.filter((ev) => {
-      const end = ev.end?.dateTime || ev.end?.date
+      const end = eventEndIso(ev)
       if (!end) return true
       return new Date(end) > now
     })
@@ -92,12 +75,13 @@ export default async function HomePage() {
     calendarError = e instanceof Error ? e.message : String(e)
   }
 
-  // Proposed actions der stadig venter (veto-deadline ikke passeret).
+  // ALLE proposed actions - også dem hvor veto-vinduet er løbet ud, fordi
+  // cron på Hobby kun kører dagligt og handlingen reelt venter på dig
+  // (du kan stadig veto via Telegram indtil cron eksekverer).
   const { data: actionsData } = await sb
     .from('actions')
     .select('id, type, payload, veto_deadline, created_at')
     .eq('status', 'proposed')
-    .gt('veto_deadline', now.toISOString())
     .order('created_at', { ascending: false })
     .limit(10)
   const proposed = (actionsData || []) as ProposedAction[]
@@ -113,7 +97,7 @@ export default async function HomePage() {
   return (
     <div className="space-y-10">
       <div>
-        <h1 className="text-2xl font-semibold">{todayHeadline()}</h1>
+        <h1 className="text-2xl font-semibold">{fmtDay(now.toISOString())}</h1>
         <p className="text-sm text-zinc-500">Overblik over hvad der ligger foran dig lige nu.</p>
       </div>
 
@@ -136,7 +120,7 @@ export default async function HomePage() {
                 key={ev.id}
                 className="flex items-start gap-3 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 bg-white dark:bg-zinc-900"
               >
-                <span className="text-xs font-mono text-zinc-500 pt-0.5 min-w-[80px]">
+                <span className="text-xs font-mono text-zinc-500 pt-0.5 min-w-[140px]">
                   {fmtEventTime(ev) || '-'}
                 </span>
                 <span className="text-sm flex-1">{ev.summary || '(uden titel)'}</span>
@@ -156,7 +140,7 @@ export default async function HomePage() {
         )}
       </section>
 
-      {/* Venter på dig - proposed actions */}
+      {/* Venter på dig - proposed actions, både inden for og efter veto-vindue */}
       <section>
         <div className="flex items-baseline justify-between mb-3">
           <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wide">Venter på dig</h2>
@@ -167,9 +151,11 @@ export default async function HomePage() {
         ) : (
           <ul className="space-y-2">
             {proposed.map((a) => {
-              const when = fmtTimeRange(a.payload?.start, a.payload?.end)
+              const when = fmtRange(a.payload?.start, a.payload?.end)
+              const day = a.payload?.start ? fmtDay(a.payload.start) : ''
               const deadline = a.veto_deadline ? new Date(a.veto_deadline) : null
-              const minutesLeft = deadline
+              const insideWindow = deadline ? deadline > now : false
+              const minutesLeft = deadline && insideWindow
                 ? Math.max(0, Math.round((deadline.getTime() - now.getTime()) / 60000))
                 : null
               return (
@@ -180,18 +166,18 @@ export default async function HomePage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium">{a.payload?.summary || '(uden titel)'}</p>
-                      {when && (
-                        <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5 font-mono">{when}</p>
+                      {(day || when) && (
+                        <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5 font-mono">
+                          {day}{day && when ? ' · ' : ''}{when}
+                        </p>
                       )}
                       {a.payload?.location && (
                         <p className="text-xs text-zinc-500 mt-0.5">{a.payload.location}</p>
                       )}
                     </div>
-                    {minutesLeft !== null && (
-                      <span className="text-xs text-amber-700 dark:text-amber-200 whitespace-nowrap pt-0.5">
-                        veto {minutesLeft} min
-                      </span>
-                    )}
+                    <span className="text-xs text-amber-700 dark:text-amber-200 whitespace-nowrap pt-0.5">
+                      {minutesLeft !== null ? `veto ${minutesLeft} min` : 'venter på cron'}
+                    </span>
                   </div>
                 </li>
               )
