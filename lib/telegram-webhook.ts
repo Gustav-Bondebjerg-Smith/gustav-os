@@ -3,7 +3,7 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { ask } from './ask'
-import { fmtDate, fmtRange, fmtDay } from './format'
+import { fmtDate, fmtRange, fmtDay, startOfTodayCph } from './format'
 import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
 import { getEvents, type GoogleCalendarEvent } from './calendar'
@@ -334,36 +334,49 @@ async function proposeCalendarEvent(captureContent: string): Promise<CalendarPro
   }
 }
 
-// Henter alle events i et vindue fra nu og N dage frem, returnerer en
-// kompakt liste Haiku kan ræsonnere over for match-finding.
+// Henter events fra START af i dag (CPH) til N dage frem. Vigtigt at gå
+// tilbage til dagens start så vi også fanger events der allerede er afsluttet
+// i dag - ellers kan vi ikke slette en aftale fra fx kl 19 hvis kl er 22.
 async function loadCandidateEvents(daysAhead: number): Promise<GoogleCalendarEvent[]> {
-  const now = new Date()
-  const to = new Date(now.getTime() + daysAhead * 24 * 3600 * 1000)
-  const events = await getEvents(now, to)
+  const from = startOfTodayCph()
+  const to = new Date(Date.now() + daysAhead * 24 * 3600 * 1000)
+  const events = await getEvents(from, to)
   // Filtrér events uden id (kan ikke slettes alligevel).
   return events.filter((e): e is GoogleCalendarEvent & { id: string } => !!e.id)
 }
 
-// Lader Haiku finde et matchende kalender-event ud fra slet-beskeden.
-// Returnerer fuld payload til en calendar_delete action, eller null hvis
-// ingen entydig match findes.
-async function proposeCalendarDelete(
-  captureContent: string
-): Promise<CalendarDeletion | null> {
-  if (!captureContent || captureContent.trim().length < 3) return null
+type DeleteAttempt =
+  | { match: CalendarDeletion; candidates?: never; reason?: never }
+  | { match: null; candidates: CandidateSummary[]; reason: string }
 
-  // 14 dage frem dækker realistisk slet-scope. Hvis du vil slette noget
-  // længere ude, må du nævne datoen i beskeden så Haiku kan løfte vinduet.
+type CandidateSummary = {
+  summary: string
+  start?: string
+  end?: string
+  location?: string
+}
+
+// Lader Haiku finde et matchende kalender-event ud fra slet-beskeden.
+// Returnerer enten match (klar til action) eller null + en kandidat-liste
+// så vi kan vise brugeren hvad vi så på.
+async function proposeCalendarDelete(captureContent: string): Promise<DeleteAttempt> {
+  if (!captureContent || captureContent.trim().length < 3) {
+    return { match: null, candidates: [], reason: 'beskeden er for kort' }
+  }
+
   let candidates: GoogleCalendarEvent[]
   try {
     candidates = await loadCandidateEvents(14)
   } catch (e) {
     console.error('Kunne ikke hente kalender-events til delete-forslag:', e)
-    return null
+    return { match: null, candidates: [], reason: 'kunne ikke hente kalender' }
   }
-  if (candidates.length === 0) return null
+  if (candidates.length === 0) {
+    return { match: null, candidates: [], reason: 'ingen events i de næste 14 dage' }
+  }
 
-  const list = candidates.slice(0, 50).map((ev, i) => ({
+  // Tag op til 200 så vi rammer 99%-tilfælde. Haiku har plads i context.
+  const list = candidates.slice(0, 200).map((ev, i) => ({
     idx: i,
     id: ev.id,
     summary: ev.summary || '(uden titel)',
@@ -372,22 +385,30 @@ async function proposeCalendarDelete(
     location: ev.location,
   }))
 
+  const candidateSummaries: CandidateSummary[] = list.slice(0, 5).map((e) => ({
+    summary: e.summary,
+    start: e.start,
+    end: e.end,
+    ...(e.location ? { location: e.location } : {}),
+  }))
+
   const system = [
-    'Du finder det ene kalender-event der matcher en kort dansk slet-besked.',
+    'Du finder det ene kalender-event der bedst matcher en kort dansk slet-besked.',
     `Lige nu i København: ${nowInCopenhagen()}.`,
     '',
-    'Du får en JSON-liste af events. Vælg det BEDSTE match baseret på titel, tid og sted.',
-    'Hvis intet event matcher tydeligt (ambiguitet, ingen overlap, vag besked): returner null.',
+    'Du får en JSON-liste af events. Vælg DET MEST SANDSYNLIGE match - også selvom det ikke er perfekt.',
+    'Vær GENERØS: en titel-overlap som "spise med skat" matcher beskeden "slet aftalen spise med skat".',
+    'Returner kun null hvis INTET event har nogen som helst relation til beskeden.',
     '',
     'Svar KUN med JSON:',
-    '{"idx": <tal fra listen>} hvis match findes',
+    '{"idx": <tal fra listen>} hvis nogen rimelig kandidat findes',
     '{"idx": null, "reason": "kort dansk forklaring"} ellers',
     '',
-    'Regler:',
-    '- Match er stærkest hvis både titel OG tid stemmer overens med beskeden.',
-    '- Kun titel-match (uden tid) er OK hvis kun ét event har den titel.',
-    '- Hvis to events matcher lige godt, vælg det tætteste i tid.',
-    '- "kl 19" matcher events der starter på XX:00 (typisk 19:00, ikke 18:30).',
+    'Matching-regler:',
+    '- Titel-substring tæller som match ("skat" matcher "spise med skat").',
+    '- Tid + dato-anker ("kl 19", "i morgen") strammer matchet hvis flere events har lignende titel.',
+    '- Hvis flere events matcher: vælg det tætteste på nu (fremtid > nyligt afsluttet).',
+    '- Ignorer fyldord som "aftalen", "mødet", "begivenheden" i beskeden - de er bare grammatik.',
   ].join('\n')
 
   const userPayload = JSON.stringify({
@@ -401,43 +422,65 @@ async function proposeCalendarDelete(
     })),
   })
 
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: PROPOSAL_MODEL,
-      max_tokens: 200,
-      temperature: 0,
-      system,
-      messages: [{ role: 'user', content: userPayload }],
-    }),
-  })
-  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
-
-  const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: { idx?: number | null }
+  let parsed: { idx?: number | null; reason?: string }
   try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: PROPOSAL_MODEL,
+        max_tokens: 200,
+        temperature: 0,
+        system,
+        messages: [{ role: 'user', content: userPayload }],
+      }),
+    })
+    if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+    const j = await r.json()
+    const raw = (j.content?.[0]?.text || '').trim()
+    const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
     parsed = JSON.parse(cleaned)
-  } catch {
-    return null
+  } catch (e) {
+    console.error('Haiku-kald til delete-match fejlede:', e)
+    return { match: null, candidates: candidateSummaries, reason: 'Haiku-fejl' }
   }
-  if (parsed.idx === null || parsed.idx === undefined) return null
+
+  if (parsed.idx === null || parsed.idx === undefined) {
+    return {
+      match: null,
+      candidates: candidateSummaries,
+      reason: parsed.reason || 'Haiku fandt ikke match',
+    }
+  }
   const chosen = list[parsed.idx]
-  if (!chosen || !chosen.id || !chosen.start || !chosen.end) return null
+  if (!chosen || !chosen.id || !chosen.start || !chosen.end) {
+    return { match: null, candidates: candidateSummaries, reason: 'valgt event mangler felter' }
+  }
 
   return {
-    event_id: chosen.id,
-    summary: chosen.summary,
-    start: chosen.start,
-    end: chosen.end,
-    ...(chosen.location ? { location: chosen.location } : {}),
+    match: {
+      event_id: chosen.id,
+      summary: chosen.summary,
+      start: chosen.start,
+      end: chosen.end,
+      ...(chosen.location ? { location: chosen.location } : {}),
+    },
   }
+}
+
+function formatCandidates(candidates: CandidateSummary[]): string {
+  if (!candidates.length) return ''
+  const lines = candidates.map((c, i) => {
+    const day = c.start ? fmtDay(c.start) : ''
+    const range = c.start && c.end ? fmtRange(c.start, c.end) : ''
+    const when = day || range ? ` (${[day, range].filter(Boolean).join(' ')})` : ''
+    return `${i + 1}. ${c.summary}${when}`
+  })
+  return 'Det jeg så i kalenderen:\n' + lines.join('\n')
 }
 
 function formatProposal(p: CalendarProposal, vetoMinutes = 10): string {
@@ -636,18 +679,18 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
   const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
 
   if (hasDeleteIntent(content)) {
-    let deletion: CalendarDeletion | null = null
+    let attempt: DeleteAttempt = { match: null, candidates: [], reason: 'flow fejlede' }
     try {
-      deletion = await proposeCalendarDelete(content)
+      attempt = await proposeCalendarDelete(content)
     } catch (e) {
       console.error('delete-forslag fejlede (ikke kritisk):', e)
     }
-    if (deletion) {
+    if (attempt.match) {
       try {
-        const sent = await sendMessage(msg.chat.id, formatDeletion(deletion, vetoMinutes))
+        const sent = await sendMessage(msg.chat.id, formatDeletion(attempt.match, vetoMinutes))
         const { error: actErr } = await sb.from('actions').insert({
           type: 'calendar_delete',
-          payload: deletion,
+          payload: attempt.match,
           source_capture_id: captureId,
           telegram_message_id: sent.message_id,
           veto_deadline: deadlineIso,
@@ -659,12 +702,13 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
       }
       return { status: 'processed', reason: 'capture_saved_with_delete' }
     }
-    // Kunne ikke finde matchende event - sig det åbent så Gustav ved hvorfor
-    // intet forslag dukker op (uden delete-grenen ville beskeden bare blive
-    // gemt som ordinær capture og virke død).
+    // Ingen match. Sig hvorfor + vis hvad jeg så, så Gustav kan justere
+    // beskeden eller verificere at eventet faktisk findes i den rigtige kalender.
+    const candidateText = formatCandidates(attempt.candidates)
+    const tail = candidateText ? `\n\n${candidateText}` : ''
     await sendMessage(
       msg.chat.id,
-      reply + '\n\nKunne ikke finde en aftale der matcher beskeden. Tjek titel/tid.'
+      `${reply}\n\nKunne ikke matche slet-beskeden: ${attempt.reason}.${tail}`
     )
     return { status: 'processed', reason: 'capture_saved_no_delete_match' }
   }
