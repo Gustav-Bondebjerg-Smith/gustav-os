@@ -1,11 +1,17 @@
 import 'server-only'
 import { getSupabase } from './supabase'
-import { insertEvent, type CalendarInsertPayload } from './calendar'
+import { insertEvent, deleteEvent, type CalendarInsertPayload } from './calendar'
 import { sendTelegramMessage } from './telegram'
 
-type ActionPayload = CalendarInsertPayload & {
+type CalendarDeletePayload = {
+  event_id: string
   summary?: string
+  start?: string
+  end?: string
+  location?: string
 }
+
+type ActionPayload = (CalendarInsertPayload & { event_id?: string }) | CalendarDeletePayload
 
 type ActionRow = {
   id: string
@@ -86,12 +92,24 @@ export async function runDueActions(limit = 10): Promise<RunDueActionsResult> {
     result.claimed += 1
 
     try {
-      if (action.type !== 'calendar_insert') {
+      let actionResult: Record<string, unknown>
+      let notifyText: string
+
+      if (action.type === 'calendar_insert') {
+        const event = await insertEvent(action.payload as CalendarInsertPayload)
+        actionResult = { event_id: event.id, html_link: event.htmlLink }
+        const link = event.htmlLink ? `\n${event.htmlLink}` : ''
+        notifyText = `Skrevet i kalender: "${action.payload?.summary || 'aftale'}"${link}`
+      } else if (action.type === 'calendar_delete') {
+        const eventId = (action.payload as CalendarDeletePayload).event_id
+        if (!eventId) throw new Error('calendar_delete mangler payload.event_id')
+        await deleteEvent(eventId)
+        actionResult = { event_id: eventId, deleted: true }
+        notifyText = `Slettet fra kalender: "${action.payload?.summary || 'aftale'}"`
+      } else {
         throw new Error(`Ukendt action-type: ${action.type}`)
       }
 
-      const event = await insertEvent(action.payload)
-      const actionResult = { event_id: event.id, html_link: event.htmlLink }
       const { error: updateError } = await sb
         .from('actions')
         .update({
@@ -104,14 +122,13 @@ export async function runDueActions(limit = 10): Promise<RunDueActionsResult> {
       if (updateError) throw new Error(`action update-fejl: ${updateError.message}`)
 
       await sb.from('audit_log').insert({
-        action: 'calendar_insert',
+        action: action.type,
         payload: { ...action.payload, ...actionResult },
         status: 'applied',
         reason: `udført efter veto-vindue (action ${action.id})`,
       })
 
-      const link = event.htmlLink ? `\n${event.htmlLink}` : ''
-      await notify(`Skrevet i kalender: "${action.payload?.summary || 'aftale'}"${link}`)
+      await notify(notifyText)
       result.executed += 1
       result.actions.push({ id: action.id, status: 'executed', summary: action.payload?.summary })
     } catch (e) {
@@ -125,12 +142,13 @@ export async function runDueActions(limit = 10): Promise<RunDueActionsResult> {
         })
         .eq('id', action.id)
       await sb.from('audit_log').insert({
-        action: 'calendar_insert',
+        action: action.type,
         payload: action.payload,
         status: 'failed',
         reason: message,
       })
-      await notify(`Kunne ikke skrive "${action.payload?.summary || 'aftale'}" i kalender: ${message}`)
+      const verb = action.type === 'calendar_delete' ? 'slette' : 'skrive'
+      await notify(`Kunne ikke ${verb} "${action.payload?.summary || 'aftale'}" i kalender: ${message}`)
       result.failed += 1
       result.actions.push({
         id: action.id,

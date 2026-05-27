@@ -3,9 +3,10 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { ask } from './ask'
-import { fmtDate } from './format'
+import { fmtDate, fmtRange, fmtDay } from './format'
 import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
+import { getEvents, type GoogleCalendarEvent } from './calendar'
 
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001'
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
@@ -59,6 +60,23 @@ type CalendarProposal = {
   start: string
   end: string
   location?: string
+}
+
+type CalendarDeletion = {
+  event_id: string
+  summary: string
+  start: string
+  end: string
+  location?: string
+}
+
+// Slet-intent regex: matcher hele ord, ikke substrings, for at undgå false positives
+// ("aftal" i "aftale" matcher fx ikke). Bruger word boundaries.
+const DELETE_INTENT = /\b(slet|fjern|aflys|aflyse|aflyst|cancel|drop)\b/i
+
+function hasDeleteIntent(text: string | null | undefined): boolean {
+  if (!text) return false
+  return DELETE_INTENT.test(text)
 }
 
 type HandleResult = {
@@ -146,7 +164,7 @@ async function findVetoTarget(replyToMsgId?: number) {
   if (replyToMsgId) {
     const { data, error } = await sb
       .from('actions')
-      .select('id, payload, telegram_message_id')
+      .select('id, type, payload, telegram_message_id')
       .eq('status', 'proposed')
       .eq('telegram_message_id', replyToMsgId)
       .limit(1)
@@ -156,7 +174,7 @@ async function findVetoTarget(replyToMsgId?: number) {
 
   const { data, error } = await sb
     .from('actions')
-    .select('id, payload, telegram_message_id')
+    .select('id, type, payload, telegram_message_id')
     .eq('status', 'proposed')
     .gte('veto_deadline', nowIso)
     .order('created_at', { ascending: false })
@@ -316,22 +334,167 @@ async function proposeCalendarEvent(captureContent: string): Promise<CalendarPro
   }
 }
 
-const WEEKDAYS_SHORT = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør']
+// Henter alle events i et vindue fra nu og N dage frem, returnerer en
+// kompakt liste Haiku kan ræsonnere over for match-finding.
+async function loadCandidateEvents(daysAhead: number): Promise<GoogleCalendarEvent[]> {
+  const now = new Date()
+  const to = new Date(now.getTime() + daysAhead * 24 * 3600 * 1000)
+  const events = await getEvents(now, to)
+  // Filtrér events uden id (kan ikke slettes alligevel).
+  return events.filter((e): e is GoogleCalendarEvent & { id: string } => !!e.id)
+}
+
+// Lader Haiku finde et matchende kalender-event ud fra slet-beskeden.
+// Returnerer fuld payload til en calendar_delete action, eller null hvis
+// ingen entydig match findes.
+async function proposeCalendarDelete(
+  captureContent: string
+): Promise<CalendarDeletion | null> {
+  if (!captureContent || captureContent.trim().length < 3) return null
+
+  // 14 dage frem dækker realistisk slet-scope. Hvis du vil slette noget
+  // længere ude, må du nævne datoen i beskeden så Haiku kan løfte vinduet.
+  let candidates: GoogleCalendarEvent[]
+  try {
+    candidates = await loadCandidateEvents(14)
+  } catch (e) {
+    console.error('Kunne ikke hente kalender-events til delete-forslag:', e)
+    return null
+  }
+  if (candidates.length === 0) return null
+
+  const list = candidates.slice(0, 50).map((ev, i) => ({
+    idx: i,
+    id: ev.id,
+    summary: ev.summary || '(uden titel)',
+    start: ev.start?.dateTime || ev.start?.date,
+    end: ev.end?.dateTime || ev.end?.date,
+    location: ev.location,
+  }))
+
+  const system = [
+    'Du finder det ene kalender-event der matcher en kort dansk slet-besked.',
+    `Lige nu i København: ${nowInCopenhagen()}.`,
+    '',
+    'Du får en JSON-liste af events. Vælg det BEDSTE match baseret på titel, tid og sted.',
+    'Hvis intet event matcher tydeligt (ambiguitet, ingen overlap, vag besked): returner null.',
+    '',
+    'Svar KUN med JSON:',
+    '{"idx": <tal fra listen>} hvis match findes',
+    '{"idx": null, "reason": "kort dansk forklaring"} ellers',
+    '',
+    'Regler:',
+    '- Match er stærkest hvis både titel OG tid stemmer overens med beskeden.',
+    '- Kun titel-match (uden tid) er OK hvis kun ét event har den titel.',
+    '- Hvis to events matcher lige godt, vælg det tætteste i tid.',
+    '- "kl 19" matcher events der starter på XX:00 (typisk 19:00, ikke 18:30).',
+  ].join('\n')
+
+  const userPayload = JSON.stringify({
+    besked: captureContent,
+    events: list.map((e) => ({
+      idx: e.idx,
+      summary: e.summary,
+      start: e.start,
+      end: e.end,
+      location: e.location ?? null,
+    })),
+  })
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: PROPOSAL_MODEL,
+      max_tokens: 200,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: userPayload }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: { idx?: number | null }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return null
+  }
+  if (parsed.idx === null || parsed.idx === undefined) return null
+  const chosen = list[parsed.idx]
+  if (!chosen || !chosen.id || !chosen.start || !chosen.end) return null
+
+  return {
+    event_id: chosen.id,
+    summary: chosen.summary,
+    start: chosen.start,
+    end: chosen.end,
+    ...(chosen.location ? { location: chosen.location } : {}),
+  }
+}
 
 function formatProposal(p: CalendarProposal, vetoMinutes = 10): string {
-  const s = new Date(p.start)
-  const e = new Date(p.end)
-  const wd = WEEKDAYS_SHORT[s.getDay()]
-  const d = `${s.getDate()}/${s.getMonth() + 1}`
-  const t1 = `${String(s.getHours()).padStart(2, '0')}.${String(s.getMinutes()).padStart(2, '0')}`
-  const t2 = `${String(e.getHours()).padStart(2, '0')}.${String(e.getMinutes()).padStart(2, '0')}`
+  // p.start/end er naive CPH-strenge fra Haiku ("2026-05-29T14:00:00").
+  // Suffix med korrekt offset for at få fmtRange/fmtDay til at vise CPH-tid
+  // korrekt selv på Vercel (UTC).
+  const sIso = withCphOffset(p.start)
+  const eIso = withCphOffset(p.end)
+  const day = fmtDay(sIso)
+  const range = fmtRange(sIso, eIso)
   const loc = p.location ? `\nSted: ${p.location}` : ''
   return [
     `Forslag: ${p.summary}`,
-    `Tid: ${wd} ${d} kl. ${t1}-${t2}${loc}`,
+    `Tid: ${day} kl. ${range}${loc}`,
     '',
     `Skriv "nej" inden ${vetoMinutes} min for at vetoe. Ellers skriver jeg den i kalenderen.`,
   ].join('\n')
+}
+
+// Slet-forslag. p.start/end kommer fra Google (absolute ISO med offset),
+// så vi kan bruge fmtRange direkte uden offset-suffix.
+function formatDeletion(p: CalendarDeletion, vetoMinutes = 10): string {
+  const day = fmtDay(p.start)
+  const range = fmtRange(p.start, p.end)
+  const loc = p.location ? `\nSted: ${p.location}` : ''
+  return [
+    `Slet: ${p.summary}`,
+    `Tid: ${day} kl. ${range}${loc}`,
+    '',
+    `Skriv "nej" inden ${vetoMinutes} min for at vetoe. Ellers slettes den fra kalenderen.`,
+  ].join('\n')
+}
+
+// Vedhæfter Europe/Copenhagen-offset til en naive datetime-streng som
+// "2026-05-29T14:00:00", så new Date() fortolker den korrekt på Vercel (UTC).
+// Bruger Intl til at finde aktuel offset (1 om vinteren, 2 om sommeren).
+function withCphOffset(naive: string): string {
+  if (/[+-]\d\d:?\d\d$/.test(naive) || naive.endsWith('Z')) return naive
+  // Find offset på den dato strengen beskriver.
+  const datePart = naive.slice(0, 10) // "YYYY-MM-DD"
+  const noonUtcMs = Date.UTC(
+    Number(datePart.slice(0, 4)),
+    Number(datePart.slice(5, 7)) - 1,
+    Number(datePart.slice(8, 10)),
+    12, 0, 0
+  )
+  const cphHour = Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Europe/Copenhagen',
+      hour: 'numeric',
+      hour12: false,
+    }).format(new Date(noonUtcMs))
+  )
+  const offsetHours = cphHour - 12
+  const sign = offsetHours >= 0 ? '+' : '-'
+  const hh = String(Math.abs(offsetHours)).padStart(2, '0')
+  return `${naive}${sign}${hh}:00`
 }
 
 function formatSources(sources: Chunk[]): string {
@@ -359,14 +522,15 @@ async function handleVeto(msg: TelegramMessage): Promise<HandleResult> {
   if (updErr) throw new Error(`veto-update fejl: ${updErr.message}`)
 
   await sb.from('audit_log').insert({
-    action: 'calendar_insert',
+    action: target.type || 'calendar_insert',
     payload: target.payload,
     status: 'vetoed',
     reason: `veto via Telegram: "${msg.text}"`,
   })
 
   const summary = target.payload?.summary || 'forslag'
-  await sendMessage(msg.chat.id, `Vetoet: "${summary}". Skrives ikke i kalenderen.`)
+  const verb = target.type === 'calendar_delete' ? 'Slettes ikke fra' : 'Skrives ikke i'
+  await sendMessage(msg.chat.id, `Vetoet: "${summary}". ${verb} kalenderen.`)
   return { status: 'processed', reason: 'vetoed_action' }
 }
 
@@ -465,6 +629,46 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
     console.error('embed fejlede (ikke kritisk):', e)
   }
 
+  // To grene: slet-intent (fjerner en eksisterende aftale) eller aftale-intent
+  // (opretter en ny). Slet-intent har forrang, fordi en besked som "slet
+  // aftalen med skat" ofte klassificeres som aftale.
+  const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
+  const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
+
+  if (hasDeleteIntent(content)) {
+    let deletion: CalendarDeletion | null = null
+    try {
+      deletion = await proposeCalendarDelete(content)
+    } catch (e) {
+      console.error('delete-forslag fejlede (ikke kritisk):', e)
+    }
+    if (deletion) {
+      try {
+        const sent = await sendMessage(msg.chat.id, formatDeletion(deletion, vetoMinutes))
+        const { error: actErr } = await sb.from('actions').insert({
+          type: 'calendar_delete',
+          payload: deletion,
+          source_capture_id: captureId,
+          telegram_message_id: sent.message_id,
+          veto_deadline: deadlineIso,
+        })
+        if (actErr) console.error('delete-forslag kunne ikke gemmes som action:', actErr.message)
+      } catch (e) {
+        console.error('delete-proposal-besked kunne ikke sendes:', e)
+        await sendMessage(msg.chat.id, reply)
+      }
+      return { status: 'processed', reason: 'capture_saved_with_delete' }
+    }
+    // Kunne ikke finde matchende event - sig det åbent så Gustav ved hvorfor
+    // intet forslag dukker op (uden delete-grenen ville beskeden bare blive
+    // gemt som ordinær capture og virke død).
+    await sendMessage(
+      msg.chat.id,
+      reply + '\n\nKunne ikke finde en aftale der matcher beskeden. Tjek titel/tid.'
+    )
+    return { status: 'processed', reason: 'capture_saved_no_delete_match' }
+  }
+
   let proposal: CalendarProposal | null = null
   if (classification?.type === 'aftale') {
     try {
@@ -475,16 +679,14 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
   }
 
   if (proposal) {
-    const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
     try {
       const sent = await sendMessage(msg.chat.id, formatProposal(proposal, vetoMinutes))
-      const deadline = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
       const { error: actErr } = await sb.from('actions').insert({
         type: 'calendar_insert',
         payload: proposal,
         source_capture_id: captureId,
         telegram_message_id: sent.message_id,
-        veto_deadline: deadline,
+        veto_deadline: deadlineIso,
       })
       if (actErr) console.error('forslag kunne ikke gemmes som action:', actErr.message)
     } catch (e) {

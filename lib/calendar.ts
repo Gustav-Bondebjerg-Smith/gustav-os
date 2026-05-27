@@ -8,6 +8,7 @@ export type GoogleCalendarEvent = {
   id?: string
   htmlLink?: string
   summary?: string
+  location?: string
   start?: {
     date?: string
     dateTime?: string
@@ -79,6 +80,20 @@ export function eventHours(event: GoogleCalendarEvent): number {
   const end = event.end?.dateTime
   if (!start || !end) return 0
   return (new Date(end).getTime() - new Date(start).getTime()) / 3.6e6
+}
+
+// Sletter et event. 410 Gone tæller som "allerede væk" og returneres som success.
+export async function deleteEvent(eventId: string): Promise<void> {
+  if (!eventId) throw new Error('eventId er påkrævet')
+  const token = await getAccessToken(WRITE_SCOPES)
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(getCalendarId())}/events/${encodeURIComponent(eventId)}`
+  const r = await fetch(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!r.ok && r.status !== 410) {
+    throw new Error(`Calendar delete HTTP ${r.status}: ${await r.text()}`)
+  }
 }
 
 export async function insertEvent(payload: CalendarInsertPayload): Promise<GoogleCalendarEvent> {

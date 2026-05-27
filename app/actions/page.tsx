@@ -12,11 +12,12 @@ type ActionRow = {
     start?: string
     end?: string
     location?: string
+    event_id?: string
   } | null
   veto_deadline: string | null
   executed_at: string | null
   vetoed_at: string | null
-  result: { html_link?: string; error?: string } | null
+  result: { html_link?: string; error?: string; deleted?: boolean } | null
   created_at: string
 }
 
@@ -86,7 +87,9 @@ export default async function ActionsPage() {
                     {a.status}
                   </span>
                   <span className="text-zinc-400">·</span>
-                  <span className="text-zinc-500">{a.type}</span>
+                  <span className="text-zinc-500">
+                    {a.type === 'calendar_delete' ? 'calendar_delete' : a.type}
+                  </span>
                 </div>
                 <p className="text-sm font-medium">{summary}</p>
                 {when && <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">{when}</p>}
@@ -100,7 +103,7 @@ export default async function ActionsPage() {
                     {deadlinePassed && ' (passeret, venter på watcher)'}
                   </p>
                 )}
-                {a.status === 'executed' && a.result?.html_link && (
+                {a.status === 'executed' && a.type === 'calendar_insert' && a.result?.html_link && (
                   <a
                     href={a.result.html_link}
                     target="_blank"
@@ -109,6 +112,9 @@ export default async function ActionsPage() {
                   >
                     Åbn i Google Calendar
                   </a>
+                )}
+                {a.status === 'executed' && a.type === 'calendar_delete' && (
+                  <p className="text-xs text-zinc-500 mt-2">Slettet fra Google Calendar</p>
                 )}
                 {a.status === 'failed' && a.result?.error && (
                   <p className="text-xs text-red-600 mt-2">fejl: {a.result.error}</p>
