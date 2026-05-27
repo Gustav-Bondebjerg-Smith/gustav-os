@@ -54,6 +54,7 @@ export default async function RootLayout({
                 gustav<span className="text-zinc-400">/os</span>
               </Link>
               <nav className="flex items-center gap-6 text-sm">
+                <Link href="/" className="hover:underline">I dag</Link>
                 <Link href="/captures" className="hover:underline">Captures</Link>
                 <Link href="/actions" className="hover:underline">Actions</Link>
                 <Link href="/ask" className="hover:underline">Ask</Link>

@@ -1,9 +1,9 @@
 # Gustav OS - STATUS
 
-Sidst opdateret: 2026-05-27 (Fase 7 live)
+Sidst opdateret: 2026-05-27 (Dashboard v2 led 1 kodet)
 
 ## Hvor er vi
-Fase 7 er LIVE på `https://gustav-os.vercel.app`. Vercel account/login er sat op, team `gustav-os-team` oprettet, projekt `gustav-os` oprettet, env vars sat, Supabase migrations `0004_telegram_webhook.sql` + `0005_cron.sql` er kørt, og Telegram webhook peger på production `/api/telegram`. Basic smoke-test er grøn: `/login` returnerer 200, `/captures` redirecter 307 til `/login`, `/api/cron/actions` returnerer 401 uden `Authorization`, Telegram `getWebhookInfo` viser production URL, og en tom fake Telegram update med korrekt secret returnerer 200 `{"ok":true,"accepted":true}`.
+Fase 7 er live på `https://gustav-os.vercel.app`. Dashboard v2 led 1 (root-overblik) er kodet og afventer commit + deploy. `/` viser nu tre sektioner i stedet for at redirecte til `/captures`: "I dag" (kalender-events for resten af dagen), "Venter på dig" (proposed actions med veto-minutter), og "Seneste captures" (5 nyeste). Top-nav har fået "I dag" som første link. Kalender-fejl wrappes i try/catch så Google API-nedbrud ikke krasher siden. `tsc --noEmit` ren. `next build` kompilerer ren (tog 7 min på cold cache). Lokal dev-server hænger ved `Compiling proxy ...` lige nu, så fuld in-browser smoke-test er endnu ikke kørt. Lokalt issue, ikke kode-bug. Klar til led 2 (balance-view) eller commit + deploy hvis vi vil teste på prod.
 
 ## Færdigt
 - Milestone 0: Next.js 15 + TS + Tailwind, git, secrets gitignored, CLAUDE.md, memory.
@@ -18,6 +18,7 @@ Fase 7 er LIVE på `https://gustav-os.vercel.app`. Vercel account/login er sat o
 - Fase 7 led 2 (webhook): `/api/telegram` route oprettet. Secret-header tjek, chat_id whitelist, idempotens via `telegram_updates`, tekst/voice capture, `/ask`, veto og kalenderforslag virker gennem server-side TS-flowet i `lib/telegram-webhook.ts`. Ny migration `0004_telegram_webhook.sql`. Ny admin-CLI `scripts/telegram-webhook.mjs` (`get`, `set <url>`, `delete`). `lib/memory.ts` udtrukket så dashboard-ask og webhook bruger samme embedding-helper. `lib/format.ts` + `lib/ask-types.ts` holder client-sikre helpers/typer væk fra server-only kæden. `proxy.ts` matcher ikke længere `/api/*`.
 - Fase 7 led 3 (cron): `/api/cron/actions` kører due actions efter veto-vindue. `/api/cron/morning` sender morgenbrief. `/api/cron/evening` sender aften-refleksion. `/api/cron/patterns` analyserer 14 dage og sender kun mønster-flag hvis der er et konkret signal. Ny migration `0005_cron.sql` med `cron_locks`, `claim_cron_lock`, `release_cron_lock` og `actions.processing_started_at`. Ny `vercel.json` med daglige schedules. `scripts/watch-actions.mjs` claimer nu actions som `executing`, så lokal watcher og cron ikke bør dobbelt-udføre samme proposed action. Actions-dashboard viser også `executing`.
 - Fase 7 led 4 (deploy): Vercel production deploy live på `https://gustav-os.vercel.app`. Telegram webhook live på `https://gustav-os.vercel.app/api/telegram`. Supabase Auth prod URL/redirect sat af Gustav. Migrations kørt i korrekt Supabase-projekt (`dxowfjyigfrhyaixyonj.supabase.co`). Vercel Cron er aktiv via `vercel.json`, men Hobby-planen kører kun daglige schedules.
+- Dashboard v2 led 1 (root-overblik): `app/page.tsx` er nu et server component med tre sektioner. "I dag" henter calendar-events fra `lib/calendar.ts` (`getEvents(startOfToday, endOfToday)`) og filtrerer events der allerede er afsluttet. "Venter på dig" lister proposed actions hvor `veto_deadline > now()`, med minutter tilbage i amber-badge. "Seneste captures" viser 5 nyeste raw_captures med område-badge og line-clamp-2 på indhold. Hver sektion har link "se alle" til den fulde liste (`/actions`, `/captures`). Kalender-fejl wrappes i try/catch så Google API-nedbrud ikke krasher siden. Top-nav i `app/layout.tsx` har nu "I dag" som første link før Captures/Actions/Ask. `tsc --noEmit` ren. `next build` kompilerer ren (tog 7 min på cold cache).
 - scripts/: load-env, test-db, test-keys, list-models, telegram-poll, telegram-webhook, classify, transcribe, reclassify, show-captures, calendar, balance, calendar-write, propose, watch-actions, show-actions, embed, embed-captures, ask. Kør som `node scripts/<navn>.mjs`.
 - lib/: `supabase.ts` (service_role, `server-only`, til interne flows uden bruger-session), `supabase-server.ts` (anon + cookies, til server components/actions/handlers), `supabase-browser.ts` (anon, til client components), `format.ts` (client-sikker datoformat), `ask-types.ts` (client-sikre ask-typer), `memory.ts` (embeddings + idempotent storeChunk), `ask.ts` (ask-funktion til dashboardet, TS-port af scripts/ask.mjs), `telegram-webhook.ts` (webhook-flow), `cron.ts` (CRON_SECRET-auth + lock), `telegram.ts` (server-side Telegram send), `calendar.ts` (server-side Google Calendar read/write), `actions-runner.ts` (due actions), `proactive.ts` (briefings + mønster-flag).
 - Portable kontekst (arbejdsform, persona, profil, faldgruber): ligger i `AGENTS.md`. Læses af Claude Code (via `@AGENTS.md`-import i `CLAUDE.md`) OG andre værktøjer (Codex, Cursor osv.). Skifter du værktøj: bed det nye læse `STATUS.md` + `AGENTS.md` først. `README.md` er nu en kort quickstart og arkitekturkort.
@@ -49,17 +50,16 @@ Fase 7 er LIVE på `https://gustav-os.vercel.app`. Vercel account/login er sat o
 - Cron smoke lokalt: `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/actions`. Kræver `CRON_SECRET` og migration `0005_cron.sql`.
 - Polleren + watcheren kan stadig bruges lokalt, men production capture kører nu via webhook. På Vercel Hobby bliver cron dog kun daglig; hyppig action-watch kræver Pro eller ekstern scheduler.
 
-## Næste: Fase 8 eller dashboard v2
-Fase 7 er bevidst delt op i 4 led, ledet i tur, fordi det er for stort til én sprint:
-- Led 1 (auth): FÆRDIG. Magic link + proxy + whitelist.
-- Led 2 (webhook): KODET. `/api/telegram` route erstatter long-polling efter deploy. Secret-header tjek med `TELEGRAM_WEBHOOK_SECRET`. Stadig kun whitelisted chat_id der kan poste. Long-polling-scriptet beholdes til lokal udvikling.
-- Led 3 (cron): KODET. Vercel Cron-routes til watch-actions + proaktive briefings. Daily UTC-schedules i `vercel.json` er Hobby-safe; hyppig action-watch skal sættes separat hvis ønsket.
-- Led 4 (deploy): FÆRDIG. Vercel-projekt + env + deploy + Supabase migrations + Telegram webhook er live.
-Næste anbefaling: production sanity-test med en rigtig Telegram-besked og dashboard-login. Derefter dashboard v2: balance-view, dashboard-overblik på root, filtre/søgning i captures, "ny capture"-felt direkte fra web.
+## Næste: dashboard v2 led 2 (balance-view) eller deploy af led 1
+Dashboard v2 deles op i 4 led i rækkefølge "mest værdi pr. byggetime":
+- Led 1 (root-overblik): KODET, ikke committet/deployet endnu.
+- Led 2 (balance-view): `/balance` med timer pr. område (personlig/studie/arbejde) over uger. Skal bygge på `lib/calendar.ts` + Claude Sonnet til kategorisering (samme logik som `scripts/balance.mjs`).
+- Led 3 (filtre + søgning): `/captures` med område-filter, type-filter og tekstsøgning (semantisk eller fuzzy LIKE).
+- Led 4 ("ny capture" i web): formular der gemmer en capture direkte fra dashboardet, kører klassificering + embed pipeline.
 Sidenote: tasks-tabellen er stadig tom. Når der kommer faktisk taskhåndtering, skal embed-captures udvides til også at embedde tasks + daily_logs + udvalgte calendar-events. Schema er klar (memory_chunks.source_type understøtter alt).
 
 ## Faser
-0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7a Auth [done] | 7b Webhook [done] | 7c Cron [done] | 7d Deploy [done]
+0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7a Auth [done] | 7b Webhook [done] | 7c Cron [done] | 7d Deploy [done] | v2.1 Root-overblik [kodet] | v2.2 Balance [næste] | v2.3 Filtre | v2.4 Web-capture
 
 ## Noter / faldgruber
 - VIGTIGT: Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` der skygger for `.env.local`. Kør scripts som `node scripts/x.mjs` (bruger `load-env.mjs`). Kør dev-server som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal virke lokalt.
@@ -86,4 +86,5 @@ Sidenote: tasks-tabellen er stadig tom. Når der kommer faktisk taskhåndtering,
 - Auth: brug `getUser()` (round-trip til Supabase) eller `getClaims()` (lokal JWT-validering) til autorisationsbeslutninger. `getSession()` læser kun fra cookies og må IKKE bruges til at gate noget (en angriber kan crafte en cookie).
 - Supabase magic link rate limit: Free tier sender 3-4 mails pr. time fra deres SMTP. For test-loops: log ind én gang, brug "Log ud"-knappen, log ind igen - cookies invalideres uden ny mail.
 - Service_role-klienten (`lib/supabase.ts`) er nu mærket med `import 'server-only'`. Hvis nogen importerer den til et client component knækker buildet med det samme. Brug `getServerSupabase()` fra `lib/supabase-server.ts` til alt der har med en bruger at gøre.
-- git: Fase 1+2 committet (db1e152). Fase 3 committet (0e5e466). Fase 4 committet (00ad3f3 + polering 02f1736). Fase 5 committet (4ffe089). Fase 6 committet (cf305ba). Fase 7 auth/webhook/cron committet (f3f83d6). Deploy-status i denne fil er endnu ikke committet. Claude/Codex committer kun når Gustav beder om det.
+- Lokal dev-server kan hænge på `○ Compiling proxy ...` flere minutter på cold cache; build-tid var 7 min i samme session. Hvis dev er hængt: `pkill -9 -f next && rm -rf .next` og giv den tid. Husk `npx next telemetry disable` første gang, ellers venter dev på en prompt der aldrig kommer i baggrundsprocesser. Start dev direkte (`env -u ANTHROPIC_API_KEY node node_modules/.bin/next dev`) for at få stdout uden npm-buffer.
+- git: Fase 1+2 committet (db1e152). Fase 3 committet (0e5e466). Fase 4 committet (00ad3f3 + polering 02f1736). Fase 5 committet (4ffe089). Fase 6 committet (cf305ba). Fase 7 auth committet (d0cb2bc). Fase 7 webhook+cron committet (f3f83d6). Fase 7 deploy-status committet (014d274). Dashboard v2 led 1 (root-overblik) er endnu ikke committet. Claude/Codex committer kun når Gustav beder om det.
