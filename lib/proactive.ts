@@ -2,6 +2,7 @@ import 'server-only'
 import { getSupabase } from './supabase'
 import { getEvents, eventHours, type GoogleCalendarEvent } from './calendar'
 import { sendTelegramMessage } from './telegram'
+import { startOfTodayCph, endOfTodayCph, fmtTime } from './format'
 
 const BRIEFING_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -144,25 +145,68 @@ async function alreadySent(kind: BriefingKind, hours: number): Promise<boolean> 
   return Boolean(data?.length)
 }
 
+// Klassificér dagen ud fra første event. Vercel Hobby tillader kun
+// daglige crons, så vi kan ikke styre HVORNÅR briefen sendes; men vi
+// kan tilpasse INDHOLDET til dagens form.
+type DayShape =
+  | { kind: 'early'; firstStart: string; label: string } // første event før 08:00 CPH
+  | { kind: 'normal'; firstStart: string; label: string } // første event 08:00-12:00
+  | { kind: 'late'; firstStart: string; label: string } // første event efter 12:00
+  | { kind: 'empty'; label: string } // ingen events i kalenderen i dag
+
+function classifyDay(todaysEvents: GoogleCalendarEvent[]): DayShape {
+  const withStart = todaysEvents
+    .map((ev) => ev.start?.dateTime)
+    .filter((s): s is string => !!s)
+    .sort()
+  const firstStart = withStart[0]
+  if (!firstStart) return { kind: 'empty', label: 'Ingen events i kalenderen i dag.' }
+
+  const hourCph = Number(fmtTime(firstStart).slice(0, 2)) // "06.45" -> 6
+  const tidStr = fmtTime(firstStart)
+  if (hourCph < 8) return { kind: 'early', firstStart, label: `Tidlig dag - første event kl ${tidStr}.` }
+  if (hourCph < 12) return { kind: 'normal', firstStart, label: `Normal dag - første event kl ${tidStr}.` }
+  return { kind: 'late', firstStart, label: `Sen start - første event kl ${tidStr}.` }
+}
+
 async function buildMorningBriefing(): Promise<string> {
   const now = new Date()
   const later = new Date(now.getTime() + 36 * 60 * 60 * 1000)
-  const [events, captures, actions] = await Promise.all([
+  const [events, todayEvents, captures, actions] = await Promise.all([
     getEvents(now, later),
+    getEvents(startOfTodayCph(), endOfTodayCph()),
     getRecentCaptures(24, 10),
     getRecentActions(48, 10),
   ])
+  const shape = classifyDay(todayEvents)
+
+  const adaptHint = (() => {
+    switch (shape.kind) {
+      case 'early':
+        return 'Han skal ud af døren snart. Hold briefen ekstra kort. Spring kontekst over og kør lige til prioritet.'
+      case 'normal':
+        return 'Standard-format: 3-5 bullets + én prioritet.'
+      case 'late':
+        return 'Han har formiddagen fri. Foreslå konkret, hvad den skal bruges til. Studie eller projekt-build, ikke spildtid.'
+      case 'empty':
+        return 'Ingen kalender-aftaler. Briefen skal udfordre ham til at sætte to konkrete blokke for dagen (studie/projekt) i stedet for at drive.'
+    }
+  })()
 
   const system = [
     'Du er Gustav OS og skriver en kort morgenbrief til Gustav på dansk.',
     'Stil: direkte, varm, konkret. Ingen lange forklaringer. Ingen em-dash.',
+    `Dagens form: ${shape.label}`,
+    `Tilpasning: ${adaptHint}`,
     'Giv max 5 korte bullets. Slut med præcis én anbefalet prioritet for dagen.',
     'Kontekst: Gustav læser medicin, arbejder som SPV/forskningsassistent og bygger dette system som hobby.',
   ].join('\n')
 
   const user = [
     `Nu i København: ${nowLabel()}`,
-    section('Kalender næste 36 timer:', events.map(fmtEvent)),
+    `Dagstype: ${shape.kind} (${shape.label})`,
+    section('I dag (kalender):', todayEvents.map(fmtEvent)),
+    section('Næste 36 timer (inkl. i morgen tidligt):', events.map(fmtEvent)),
     section('Seneste captures:', captures.map(fmtCapture)),
     section('Seneste actions:', actions.map(fmtAction)),
   ].join('\n\n')
