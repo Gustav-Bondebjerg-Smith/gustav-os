@@ -45,6 +45,13 @@ function eventEndIso(ev: GoogleCalendarEvent): string | null {
   return ev.end?.dateTime || ev.end?.date || null
 }
 
+function labelSource(source: string): string {
+  if (source === 'telegram_voice') return 'voice'
+  if (source === 'telegram_text') return 'text'
+  if (source === 'dashboard') return 'web'
+  return source
+}
+
 function fmtEventTime(ev: GoogleCalendarEvent): string {
   const s = ev.start?.dateTime
   const e = ev.end?.dateTime
@@ -204,9 +211,7 @@ export default async function HomePage() {
                 <div className="flex flex-wrap items-center gap-2 mb-1 text-xs">
                   <span className="text-zinc-500 font-mono">{fmtDate(c.created_at)}</span>
                   <span className="text-zinc-400">·</span>
-                  <span className="text-zinc-500">
-                    {c.source === 'telegram_voice' ? 'voice' : 'text'}
-                  </span>
+                  <span className="text-zinc-500">{labelSource(c.source)}</span>
                   {c.area && (
                     <>
                       <span className="text-zinc-400">·</span>

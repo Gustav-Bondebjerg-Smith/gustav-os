@@ -9,6 +9,7 @@
 import Link from 'next/link'
 import { getSupabase } from '@/lib/supabase'
 import { fmtDate } from '@/lib/format'
+import { NewCaptureForm } from './new-capture-form'
 
 type Capture = {
   id: string
@@ -22,7 +23,15 @@ type Capture = {
 
 const AREAS = ['personlig', 'studie', 'arbejde'] as const
 const TYPES = ['opgave', 'note', 'ide', 'aftale'] as const
-const SOURCES = ['text', 'voice'] as const
+const SOURCES = ['text', 'voice', 'web'] as const
+
+// Mapping fra UI-source-værdi til DB-source-værdi. Telegram-captures gemmes
+// som telegram_text/telegram_voice, web-formularen som dashboard.
+const SOURCE_DB_MAP: Record<(typeof SOURCES)[number], string> = {
+  text: 'telegram_text',
+  voice: 'telegram_voice',
+  web: 'dashboard',
+}
 
 type Area = (typeof AREAS)[number]
 type Type = (typeof TYPES)[number]
@@ -66,6 +75,13 @@ function hasAnyFilter(f: Filters): boolean {
   return !!(f.q || f.area || f.type || f.source)
 }
 
+function labelSource(source: string): string {
+  if (source === 'telegram_voice') return 'voice'
+  if (source === 'telegram_text') return 'text'
+  if (source === 'dashboard') return 'web'
+  return source
+}
+
 export const dynamic = 'force-dynamic'
 
 type SearchParams = Promise<{
@@ -93,7 +109,7 @@ export default async function CapturesPage({ searchParams }: { searchParams: Sea
 
   if (filters.area) query = query.eq('area', filters.area)
   if (filters.type) query = query.eq('classification->>type', filters.type)
-  if (filters.source) query = query.eq('source', `telegram_${filters.source}`)
+  if (filters.source) query = query.eq('source', SOURCE_DB_MAP[filters.source])
   if (filters.q) {
     // Escape % og _ så de er literal, og brug ilike for case-insensitive substring.
     const safe = filters.q.replace(/[\\%_]/g, (m) => `\\${m}`)
@@ -113,9 +129,11 @@ export default async function CapturesPage({ searchParams }: { searchParams: Sea
       <div className="mb-6">
         <h1 className="text-2xl font-semibold mb-1">Captures</h1>
         <p className="text-sm text-zinc-500">
-          Telegram-tekst + voicenotes. Op til 100 nyeste. Filtre og søgning kombineres med AND.
+          Telegram-tekst, voicenotes og web-form. Op til 100 nyeste. Filtre + søgning kombineres med AND.
         </p>
       </div>
+
+      <NewCaptureForm />
 
       {/* Søge-form: GET. Hidden inputs bevarer aktive chips. */}
       <form action="/captures" method="get" className="mb-4 flex gap-2">
@@ -202,9 +220,7 @@ export default async function CapturesPage({ searchParams }: { searchParams: Sea
               <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
                 <span className="text-zinc-500 font-mono">{fmtDate(c.created_at)}</span>
                 <span className="text-zinc-400">·</span>
-                <span className="text-zinc-500">
-                  {c.source === 'telegram_voice' ? 'voice' : 'text'}
-                </span>
+                <span className="text-zinc-500">{labelSource(c.source)}</span>
                 {c.area && (
                   <>
                     <span className="text-zinc-400">·</span>
