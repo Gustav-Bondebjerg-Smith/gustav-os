@@ -1,9 +1,9 @@
 # Gustav OS - STATUS
 
-Sidst opdateret: 2026-05-29 (Dashboard v2 led 3 - filtre + søgning kodet)
+Sidst opdateret: 2026-05-29 (Dashboard v2 led 3 - filtre + søgning deployet)
 
 ## Hvor er vi
-Fase 7 er live. Dashboard v2 led 1+2 + slet-flow er deployet. Led 3 (`/captures` med filtre + søgning) er kodet: server component med query-params `?q=` (ILIKE), `?area=`, `?type=` (på `classification->>type`), `?source=`. Filter-chips toggler det enkelte filter, søge-form er GET + bevarer aktive chips som hidden inputs. AND mellem alle filtre. Afventer commit + deploy. Klar til led 4 (web-capture).
+Fase 7 er live. Dashboard v2 led 1+2+3 + slet-flow er deployet. Led 3 (`/captures` med filtre + søgning) er live: server component med query-params `?q=` (ILIKE), `?area=`, `?type=` (på `classification->>type`), `?source=`. Filter-chips toggler det enkelte filter, søge-form er GET + bevarer aktive chips som hidden inputs. AND mellem alle filtre. Klar til led 4 (web-capture).
 
 ## Færdigt
 - Milestone 0: Next.js 15 + TS + Tailwind, git, secrets gitignored, CLAUDE.md, memory.
@@ -53,16 +53,16 @@ Fase 7 er live. Dashboard v2 led 1+2 + slet-flow er deployet. Led 3 (`/captures`
 - Cron smoke lokalt: `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/actions`. Kræver `CRON_SECRET` og migration `0005_cron.sql`.
 - Polleren + watcheren kan stadig bruges lokalt, men production capture kører nu via webhook. På Vercel Hobby bliver cron dog kun daglig; hyppig action-watch kræver Pro eller ekstern scheduler.
 
-## Næste: dashboard v2 led 4 (web-capture) eller deploy af led 3
+## Næste: dashboard v2 led 4 (web-capture)
 Dashboard v2 deles op i 4 led i rækkefølge "mest værdi pr. byggetime":
 - Led 1 (root-overblik): DEPLOYET.
 - Led 2 (balance-view): DEPLOYET.
-- Led 3 (filtre + søgning): KODET, ikke committet/deployet endnu.
+- Led 3 (filtre + søgning): DEPLOYET.
 - Led 4 ("ny capture" i web): formular der gemmer en capture direkte fra dashboardet, kører klassificering + embed pipeline.
 Sidenote: tasks-tabellen er stadig tom. Når der kommer faktisk taskhåndtering, skal embed-captures udvides til også at embedde tasks + daily_logs + udvalgte calendar-events. Schema er klar (memory_chunks.source_type understøtter alt).
 
 ## Faser
-0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7a Auth [done] | 7b Webhook [done] | 7c Cron [done] | 7d Deploy [done] | v2.1 Root-overblik [done] | v2.2 Balance [done] | v2.3 Filtre [kodet] | v2.4 Web-capture [næste]
+0 Life Audit [done] | 0.5 Fundament [done] | 1 Supabase+schema [done] | 2 Capture pipeline [done] | 3 Calendar+balance [done] | 4 Auto-handlinger [done] | 5 Memory/ask [done] | 6 Dashboard [done] | 7a Auth [done] | 7b Webhook [done] | 7c Cron [done] | 7d Deploy [done] | v2.1 Root-overblik [done] | v2.2 Balance [done] | v2.3 Filtre [done] | v2.4 Web-capture [næste]
 
 ## Noter / faldgruber
 - VIGTIGT: Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` der skygger for `.env.local`. Kør scripts som `node scripts/x.mjs` (bruger `load-env.mjs`). Kør dev-server som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal virke lokalt.
