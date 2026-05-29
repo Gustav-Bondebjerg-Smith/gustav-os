@@ -55,6 +55,7 @@ export default async function RootLayout({
               </Link>
               <nav className="flex items-center gap-6 text-sm">
                 <Link href="/" className="hover:underline">I dag</Link>
+                <Link href="/balance" className="hover:underline">Balance</Link>
                 <Link href="/captures" className="hover:underline">Captures</Link>
                 <Link href="/actions" className="hover:underline">Actions</Link>
                 <Link href="/ask" className="hover:underline">Ask</Link>
