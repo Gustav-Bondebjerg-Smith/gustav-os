@@ -1,0 +1,17 @@
+name: Actions cron
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  call-actions-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/actions
+        env:
+          PROD_URL: ${{ secrets.PROD_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -f -X GET "$PROD_URL/api/cron/actions" -H "Authorization: Bearer $CRON_SECRET"
