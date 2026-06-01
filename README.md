@@ -92,7 +92,7 @@ Cron endpoints:
 
 Alle kræver `Authorization: Bearer <CRON_SECRET>`.
 
-`vercel.json` er sat konservativt med daglige UTC-schedules, så Vercel Hobby ikke fejler deploy. Hvis actions skal udføres få minutter efter veto-deadline, skal `/api/cron/actions` rammes hvert 5. minut via Vercel Pro eller en ekstern scheduler.
+`vercel.json` har daglige UTC-schedules som fallback (Vercel Hobby tillader kun daglig cron). Den sub-daglige cron kører via Supabase pg_cron + pg_net (migration `0007_pg_cron_actions.sql`): jobbet `gustav-os-actions` kalder `/api/cron/actions` hvert 10. minut, 24/7, direkte fra databasen. CRON_SECRET ligger krypteret i Supabase Vault. Status og afinstallation: se `STATUS.md` og migrationens BLOK 3/4.
 
 ## Handover-regel
 

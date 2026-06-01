@@ -6,12 +6,18 @@ import { ask } from './ask'
 import { fmtDate, fmtRange, fmtDay, startOfTodayCph } from './format'
 import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
-import { getEvents, type GoogleCalendarEvent } from './calendar'
+import { getEvents, insertEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
+const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
 const WHISPER_MODEL = 'whisper-1'
 const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'cancel', 'skip', 'no'])
+
+// Hurtig pre-filter inden vi kalder Haiku for at klassificere intent. Sparer
+// et model-kald på de fleste beskeder. Hvis nye trigger-fraser skal med, så
+// tilføj dem her OG i system-prompten i detectActivityStart.
+const ACTIVITY_TRIGGER = /\b(starter på|starter med|går i gang med|begynder( på| med)?|skifter til|påbegynder|tager fat på)\b/i
 
 type TelegramChat = {
   id: number
@@ -702,6 +708,204 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
   return { status: 'processed', reason: 'capture_saved' }
 }
 
+// Tids-tracking via aktivitets-start.
+// Flow: Gustav skriver "starter på X". Hvis der allerede er en pending aktivitet
+// for hans chat, lukkes den ved at indsætte en kalenderbegivenhed fra dens
+// started_at til nu. Den nye aktivitet gemmes som pending.
+
+type ActivityIntent = {
+  isActivityStart: boolean
+  activityName: string | null
+}
+
+type PendingActivityRow = {
+  chat_id: number
+  activity_name: string
+  started_at: string
+}
+
+function looksLikeActivityStart(text: string | null | undefined): boolean {
+  if (!text) return false
+  return ACTIVITY_TRIGGER.test(text)
+}
+
+async function detectActivityStart(text: string): Promise<ActivityIntent> {
+  if (!text || text.trim().length < 3) {
+    return { isActivityStart: false, activityName: null }
+  }
+
+  const system = [
+    'Du klassificerer om en kort dansk besked udtrykker at brugeren STARTER en ny aktivitet lige nu.',
+    'Svar KUN med JSON, intet andet:',
+    '{"isActivityStart": true, "activityName": "kort dansk titel max 6 ord"}',
+    'eller',
+    '{"isActivityStart": false, "activityName": null}',
+    '',
+    'Trigger-fraser: "starter på", "starter med", "går i gang med", "begynder", "skifter til", "påbegynder", "tager fat på" og lignende.',
+    'activityName: bare aktiviteten uden trigger-fraserne. Eksempler:',
+    '  "starter på pleuritis-kapitlet" -> "pleuritis-kapitlet"',
+    '  "skifter til frokost" -> "frokost"',
+    '  "går i gang med journalen" -> "journalen"',
+    'Første bogstav stort. Ingen punktum til sidst.',
+    '',
+    'Returner false hvis beskeden er:',
+    '- en aftale med tidspunkt ("møde kl 14")',
+    '- en note, ide, refleksion eller observation',
+    '- en slet-besked ("slet aftalen")',
+    '- en /-kommando',
+    '- i fortid eller fremtid ("startede i går", "starter i morgen kl 10")',
+    '- generel tekst uden klar nu-start',
+  ].join('\n')
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: ACTIVITY_DETECTOR_MODEL,
+      max_tokens: 100,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: text }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: { isActivityStart?: boolean; activityName?: string | null }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return { isActivityStart: false, activityName: null }
+  }
+  if (!parsed.isActivityStart || !parsed.activityName) {
+    return { isActivityStart: false, activityName: null }
+  }
+  return { isActivityStart: true, activityName: parsed.activityName.trim() }
+}
+
+async function getPendingActivity(chatId: number): Promise<PendingActivityRow | null> {
+  const sb = getSupabase()
+  const { data, error } = await sb
+    .from('pending_activity')
+    .select('chat_id, activity_name, started_at')
+    .eq('chat_id', chatId)
+    .maybeSingle()
+  if (error) throw new Error(`pending_activity select-fejl: ${error.message}`)
+  return data || null
+}
+
+async function upsertPendingActivity(
+  chatId: number,
+  activityName: string,
+  startedAt: Date
+): Promise<void> {
+  const sb = getSupabase()
+  const { error } = await sb
+    .from('pending_activity')
+    .upsert(
+      {
+        chat_id: chatId,
+        activity_name: activityName,
+        started_at: startedAt.toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'chat_id' }
+    )
+  if (error) throw new Error(`pending_activity upsert-fejl: ${error.message}`)
+}
+
+// "HH:MM" i Europe/Copenhagen. Bruger kolon (ikke punktum) fordi det er
+// formatet for tids-tracking-bekræftelser.
+function fmtTimeColonCph(value: string | Date): string {
+  const date = typeof value === 'string' ? new Date(value) : value
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Copenhagen',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const h = parts.find((p) => p.type === 'hour')?.value ?? '00'
+  const m = parts.find((p) => p.type === 'minute')?.value ?? '00'
+  return `${h}:${m}`
+}
+
+async function handleActivityStart(
+  msg: TelegramMessage,
+  activityName: string
+): Promise<HandleResult> {
+  const chatId = msg.chat.id
+  const now = new Date()
+
+  let pending: PendingActivityRow | null = null
+  try {
+    pending = await getPendingActivity(chatId)
+  } catch (e) {
+    console.error('pending_activity lookup fejlede:', e)
+    await sendMessage(
+      chatId,
+      `Kunne ikke læse pending aktivitet: ${e instanceof Error ? e.message : String(e)}`
+    )
+    return { status: 'processed', reason: 'activity_lookup_failed' }
+  }
+
+  if (pending) {
+    const startDate = new Date(pending.started_at)
+    try {
+      await insertEvent({
+        summary: pending.activity_name,
+        start: startDate,
+        end: now,
+      })
+    } catch (e) {
+      console.error('Kalender-indsætning for tids-tracking fejlede:', e)
+      await sendMessage(
+        chatId,
+        `Kunne ikke indsætte "${pending.activity_name}" i kalenderen: ${e instanceof Error ? e.message : String(e)}. Pending bevares.`
+      )
+      return { status: 'processed', reason: 'activity_calendar_failed' }
+    }
+
+    try {
+      await upsertPendingActivity(chatId, activityName, now)
+    } catch (e) {
+      console.error('pending_activity upsert fejlede efter kalender-insert:', e)
+      await sendMessage(
+        chatId,
+        `Indsatte "${pending.activity_name}" i kalenderen, men kunne ikke gemme ny pending: ${e instanceof Error ? e.message : String(e)}`
+      )
+      return { status: 'processed', reason: 'activity_upsert_failed' }
+    }
+
+    const startTime = fmtTimeColonCph(startDate)
+    const endTime = fmtTimeColonCph(now)
+    await sendMessage(
+      chatId,
+      `✅ Indsat: ${pending.activity_name} (${startTime}–${endTime}). Nu i gang: ${activityName}`
+    )
+    return { status: 'processed', reason: 'activity_switched' }
+  }
+
+  // Ingen pending: gem bare den nye uden at indsætte noget.
+  try {
+    await upsertPendingActivity(chatId, activityName, now)
+  } catch (e) {
+    console.error('pending_activity upsert fejlede:', e)
+    await sendMessage(
+      chatId,
+      `Kunne ikke gemme pending aktivitet: ${e instanceof Error ? e.message : String(e)}`
+    )
+    return { status: 'processed', reason: 'activity_save_failed' }
+  }
+  await sendMessage(chatId, `▶️ Startet: ${activityName} (${fmtTimeColonCph(now)})`)
+  return { status: 'processed', reason: 'activity_started' }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<HandleResult> {
   const msg = update.message
   if (!msg) return { status: 'ignored', reason: 'no_message' }
@@ -720,6 +924,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
       'Hej Gustav. Send tekst eller voicenote til capture. Brug /ask <spørgsmål> til at spørge din second brain.'
     )
     return { status: 'processed', reason: 'command_help' }
+  }
+
+  // Aktivitets-start har forrang over almindelig capture. Pre-filtrér med
+  // regex så vi kun kalder Haiku når en trigger-frase faktisk er der.
+  if (msg.text && looksLikeActivityStart(msg.text)) {
+    let intent: ActivityIntent = { isActivityStart: false, activityName: null }
+    try {
+      intent = await detectActivityStart(msg.text)
+    } catch (e) {
+      console.error('activity intent detection fejlede (falder tilbage til capture):', e)
+    }
+    if (intent.isActivityStart && intent.activityName) {
+      return handleActivityStart(msg, intent.activityName)
+    }
   }
 
   return handleCapture(msg)

@@ -2,6 +2,17 @@
 
 Denne fil er den fælles, værktøjs-uafhængige kontekst for Gustav OS. Læs den FØRST, uanset om du er Claude Code, Codex, Cursor eller andet. Læs derefter `STATUS.md` for hvor projektet er lige nu.
 
+Gustav OS er et personligt AI operating system. Det er en hobby-build Gustav selv ejer, ikke en karriere-forpligtelse.
+
+## Hvor ligger tingene (dokument-kort)
+- `AGENTS.md` (denne fil) = hvem Gustav er + hvordan man arbejder med ham + persona. Den ENE kilde til det. Ændrer sig sjældent.
+- `STATUS.md` = hvor projektet er lige nu. Logbog, opdateres hver session. Læs den efter denne fil.
+- `README.md` = hvordan man kører koden (kommandoer, arkitekturkort). Teknisk.
+- `CLAUDE.md` = tynd pegepind der importerer denne fil (så Claude Code auto-loader den). Intet unikt indhold.
+- Referencemateriale (roadmap, life audit, skematik, cheat sheet, /goal-skabelon) ligger i `../reference/`.
+- Forældede handover-noter ligger i `../arkiv/`.
+- Fuld byggeplan (Claude Code-specifik): `~/.claude/plans/nu-p-begynder-vi-personal-zippy-giraffe.md`.
+
 ## Om Gustav
 - Gustav Bondebjerg Smith, 23 år (f. 24/04/2003), bor i Odense, opvokset i København.
 - Medicinstuderende på SDU (4. semester). Sygeplejevikar (SPV) + forskningsassistent på Herlev.
@@ -13,7 +24,7 @@ Denne fil er den fælles, værktøjs-uafhængige kontekst for Gustav OS. Læs de
 - Mål: konvertere medicin x AI til en proaktiv build han selv ejer.
 - Behandl projektet som hobby og leg, ikke karriere-forpligtelse, for at modvirke perfektionisme-paralyse.
 - Retention er designkriterie nr. 1: synlig værdi tidligt, lav friktion. Hans risiko er at sprinte og droppe projektet, ikke dovenskab.
-- Fuld profil i life audit-docx, sidste sektion (ligger i mappen over dette repo).
+- Fuld profil i `../reference/Life-Audit.docx`, sidste sektion.
 
 ## Sådan arbejder du med Gustav
 - Dansk. Dot points, ikke lange afsnit medmindre han beder om det.
@@ -21,6 +32,8 @@ Denne fil er den fælles, værktøjs-uafhængige kontekst for Gustav OS. Læs de
 - Direkte. Ikke refleksiv enighed. Push tilbage når han tager fejl.
 - Drop preamblen. Kom til svaret. Én konkret anbefaling, ikke tre valgmuligheder.
 - Forklar hvert skridt (han lærer stacken), men propp ikke for meget ind pr. session.
+- Når opgaven kræver GitHub, Vercel eller andre web-UI trin: sig præcist hvor han skal klikke, hvad feltet hedder, og hvad der skal stå i feltet. Placeholders som `DIN_GITHUB_REPO_URL` forvirrer ham, medmindre de straks oversættes til hans konkrete værdi.
+- Hvis han skriver "jeg er helt tabt", skift til lavfriktionsguidning: én skærm ad gangen, korte trin, og forklar forskellen på Terminal, GitHub UI og lokale filer.
 - Efterlad altid repoet i en kørende, brugbar tilstand. Opdatér `STATUS.md` til sidst.
 - Medicinske fagtermer på latin som udgangspunkt, ellers terminologien fra hans uni-materiale.
 
