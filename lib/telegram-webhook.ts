@@ -3,14 +3,15 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { ask } from './ask'
-import { fmtDate, fmtRange, fmtDay, startOfTodayCph } from './format'
+import { fmtDate, fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
 import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
-import { getEvents, insertEvent, type GoogleCalendarEvent } from './calendar'
+import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
+const CALENDAR_EDIT_MODEL = 'claude-haiku-4-5-20251001'
 const WHISPER_MODEL = 'whisper-1'
 const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'cancel', 'skip', 'no'])
 
@@ -28,6 +29,10 @@ const ACTIVITY_TRIGGER = /(?<![\p{L}\p{N}])(starter på|starter med|går i gang 
 // fanges højere oppe i routingen. Samme Unicode-grænse-trick som ACTIVITY_TRIGGER
 // pga. æ/ø/å. Holdes i sync med trigger-listen i detectActivityStop's system-prompt.
 const ACTIVITY_STOP_TRIGGER = /(?<![\p{L}\p{N}])(slutter(?: på| med)?|slut|stopper(?: med)?|afslutter|holder pause|tager (?:en )?pause|pause|færdig(?: med)?|done)(?![\p{L}\p{N}])/iu
+
+// Kalender-edit prefilter. Matcher kun sandsynlige edit-kommandoer før Haiku
+// afgør intent, så almindelige captures ikke betaler for et model-kald.
+const CALENDAR_EDIT_TRIGGER = /(?<![\p{L}\p{N}])(?:ret(?:te|ter|tede)?|ændr(?:e|er|ede)?|flyt(?:te|ter|tede)?|startede[\s\S]{0,80}først|slut(?:tede|ter|tid)?|gik til|skubbede[\s\S]{0,80}til)(?![\p{L}\p{N}])/iu
 
 type TelegramChat = {
   id: number
@@ -78,6 +83,23 @@ type CalendarDeletion = {
   start: string
   end: string
   location?: string
+}
+
+type CalendarEditType = 'end' | 'start' | 'shift'
+
+type CalendarEditIntent =
+  | {
+      isEditIntent: true
+      eventHint: string
+      editType: CalendarEditType
+      newTime: string
+    }
+  | { isEditIntent: false }
+
+type EditableCalendarEvent = GoogleCalendarEvent & {
+  id: string
+  start: { dateTime: string }
+  end: { dateTime: string }
 }
 
 // Slet-intent regex: matcher hele ord, ikke substrings, for at undgå false positives
@@ -444,6 +466,298 @@ async function proposeCalendarDelete(captureContent: string): Promise<DeleteAtte
       end: chosen.end,
       ...(chosen.location ? { location: chosen.location } : {}),
     },
+  }
+}
+
+function looksLikeCalendarEdit(text: string | null | undefined): boolean {
+  if (!text) return false
+  return CALENDAR_EDIT_TRIGGER.test(text)
+}
+
+async function detectCalendarEditIntent(text: string): Promise<CalendarEditIntent> {
+  if (!text || text.trim().length < 3) return { isEditIntent: false }
+
+  const system = [
+    'Du klassificerer om en kort dansk Telegram-besked beder om at RETTE, ÆNDRE eller FLYTTE en eksisterende kalenderbegivenhed.',
+    'Svar KUN med JSON, intet andet.',
+    '',
+    'Hvis beskeden er en kalender-edit:',
+    '{"isEditIntent": true, "eventHint": "kort titel/søgeord", "editType": "end|start|shift", "newTime": "HH:MM"}',
+    '',
+    'Hvis ikke:',
+    '{"isEditIntent": false}',
+    '',
+    'editType-regler:',
+    '- "end": brug når brugeren retter sluttiden. Eksempler: "unilæsning sluttede 13:30", "X gik til 15:00", "ret sluttid til 16:15".',
+    '- "start": brug når brugeren retter starttiden, men sluttiden bevares. Eksempler: "jeg startede AI arbejde først 18:20", "ret starttid på X til 09:30".',
+    '- "shift": brug når hele eventet flyttes, og varigheden skal bevares. Eksempler: "flyt træning til 14:30", "skubbede læsning til 11:00", "ændre møde til 10:00" hvis der ikke står start/slut.',
+    '',
+    'eventHint er kun navnet på eventet, uden ord som ret/ændre/flyt/startede/først/sluttede/gik til/skubbede/til/klokken og uden tidspunkt.',
+    'newTime skal være 24-timers HH:MM, fx "09:05" eller "18:20".',
+    '',
+    'Returner false hvis beskeden er en ny aftale, en slet-besked, en aktivitet-start/stop uden kalender-edit, en note/ide/refleksion, eller hvis der ikke er en konkret tid.',
+  ].join('\n')
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: CALENDAR_EDIT_MODEL,
+      max_tokens: 160,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: text }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: {
+    isEditIntent?: boolean
+    eventHint?: string
+    editType?: string
+    newTime?: string
+  }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return { isEditIntent: false }
+  }
+
+  const editTypes: CalendarEditType[] = ['end', 'start', 'shift']
+  const editType = parsed.editType
+  const newTime = parsed.newTime ? normalizeEditTime(parsed.newTime) : null
+  const eventHint = parsed.eventHint?.trim()
+  if (
+    !parsed.isEditIntent ||
+    !eventHint ||
+    !newTime ||
+    !editType ||
+    !editTypes.includes(editType as CalendarEditType)
+  ) {
+    return { isEditIntent: false }
+  }
+
+  return {
+    isEditIntent: true,
+    eventHint,
+    editType: editType as CalendarEditType,
+    newTime,
+  }
+}
+
+async function loadTodaysEditableEvents(): Promise<EditableCalendarEvent[]> {
+  const from = new Date(startOfTodayCph().getTime() - 2 * 3600000)
+  const to = endOfTodayCph()
+  const events = await getEvents(from, to)
+  return events.filter(
+    (e): e is EditableCalendarEvent => !!e.id && !!e.start?.dateTime && !!e.end?.dateTime
+  )
+}
+
+async function matchCalendarEditEvent(
+  eventHint: string,
+  candidates: EditableCalendarEvent[]
+): Promise<EditableCalendarEvent | null> {
+  if (!eventHint || candidates.length === 0) return null
+
+  const list = candidates.slice(0, 200).map((ev) => ({
+    event_id: ev.id,
+    summary: ev.summary || '(uden titel)',
+    start: ev.start.dateTime,
+    end: ev.end.dateTime,
+    location: ev.location ?? null,
+  }))
+
+  const system = [
+    'Du matcher et kort dansk eventHint til præcis én kalenderbegivenhed fra i dag.',
+    `Lige nu i København: ${nowInCopenhagen()}.`,
+    '',
+    'Du får en JSON-liste af events. Vælg det ene event der bedst matcher hintet.',
+    'Vær generøs med små titel-forskelle og bøjninger, men returner null hvis intet event har en reel relation.',
+    '',
+    'Svar KUN med JSON:',
+    '{"event_id": "id fra listen"} hvis der er et rimeligt match',
+    '{"event_id": null, "reason": "kort dansk forklaring"} ellers',
+    '',
+    'Matching-regler:',
+    '- Titel-overlap er vigtigst: "uni", "unilæsning" og "læsning" kan matche samme event.',
+    '- Hvis flere events matcher, vælg det event hvor titlen passer bedst. Brug tid kun som tie-breaker.',
+    '- Ignorer fyldord som "aftale", "event", "møde", "arbejde" hvis resten af hintet matcher bedre.',
+  ].join('\n')
+
+  const userPayload = JSON.stringify({ eventHint, events: list })
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: CALENDAR_EDIT_MODEL,
+      max_tokens: 160,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: userPayload }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: { event_id?: string | null }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return null
+  }
+
+  if (!parsed.event_id) return null
+  return candidates.find((event) => event.id === parsed.event_id) || null
+}
+
+type CalendarEditComputation = {
+  patch: {
+    start?: Date
+    end?: Date
+  }
+  start: Date
+  end: Date
+}
+
+function computeCalendarEdit(
+  event: EditableCalendarEvent,
+  intent: Extract<CalendarEditIntent, { isEditIntent: true }>
+): CalendarEditComputation {
+  const currentStart = new Date(event.start.dateTime)
+  const currentEnd = new Date(event.end.dateTime)
+  const newTime = normalizeEditTime(intent.newTime)
+  if (!newTime) throw new Error(`Ugyldig tid: ${intent.newTime}`)
+
+  if (intent.editType === 'end') {
+    const endDay = cphYmd(event.end.dateTime)
+    let end = cphDateTimeOnDay(endDay, newTime)
+    if (end.getTime() <= currentStart.getTime()) {
+      end = cphDateTimeOnDay(addDaysToYmd(endDay, 1), newTime)
+    }
+    if (end.getTime() <= currentStart.getTime()) {
+      throw new Error('Den nye sluttid skal være efter starttid.')
+    }
+    return { patch: { end }, start: currentStart, end }
+  }
+
+  if (intent.editType === 'start') {
+    const start = cphDateTimeOnDay(cphYmd(event.start.dateTime), newTime)
+    if (start.getTime() >= currentEnd.getTime()) {
+      throw new Error('Den nye starttid skal være før sluttid.')
+    }
+    return { patch: { start }, start, end: currentEnd }
+  }
+
+  const durationMs = currentEnd.getTime() - currentStart.getTime()
+  if (durationMs <= 0) throw new Error('Eventet har en ugyldig varighed.')
+  const start = cphDateTimeOnDay(cphYmd(event.start.dateTime), newTime)
+  const end = new Date(start.getTime() + durationMs)
+  return { patch: { start, end }, start, end }
+}
+
+function normalizeEditTime(value: string): string | null {
+  const normalized = value.trim().replace('.', ':')
+  const match = normalized.match(/^([01]?\d|2[0-3]):([0-5]\d)$/)
+  if (!match) return null
+  return `${match[1].padStart(2, '0')}:${match[2]}`
+}
+
+function cphYmd(value: string | Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Copenhagen',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(typeof value === 'string' ? new Date(value) : value)
+}
+
+function cphDateTimeOnDay(ymd: string, hhmm: string): Date {
+  return new Date(withCphOffset(`${ymd}T${hhmm}:00`))
+}
+
+function addDaysToYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split('-').map(Number)
+  const shifted = new Date(Date.UTC(y, m - 1, d + days, 12, 0, 0))
+  const yyyy = shifted.getUTCFullYear()
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(shifted.getUTCDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function formatCalendarEditConfirmation(
+  summary: string | undefined,
+  start: Date,
+  end: Date
+): string {
+  return `✅ Rettet: ${summary || '(uden titel)'} (${fmtTimeColonCph(start)}–${fmtTimeColonCph(end)})`
+}
+
+async function handleCalendarEdit(
+  msg: TelegramMessage,
+  intent: Extract<CalendarEditIntent, { isEditIntent: true }>
+): Promise<HandleResult> {
+  const chatId = msg.chat.id
+  await sendChatAction(chatId)
+
+  let candidates: EditableCalendarEvent[] = []
+  try {
+    candidates = await loadTodaysEditableEvents()
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    await sendMessage(chatId, `Kunne ikke hente kalenderen lige nu: ${error}`)
+    return { status: 'processed', reason: 'calendar_edit_load_failed' }
+  }
+
+  let event: EditableCalendarEvent | null = null
+  try {
+    event = await matchCalendarEditEvent(intent.eventHint, candidates)
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    await sendMessage(chatId, `Kunne ikke matche kalender-event lige nu: ${error}`)
+    return { status: 'processed', reason: 'calendar_edit_match_failed' }
+  }
+
+  if (!event) {
+    await sendMessage(chatId, `Kunne ikke finde '${intent.eventHint}' i kalenderen i dag.`)
+    return { status: 'processed', reason: 'calendar_edit_no_match' }
+  }
+
+  let computed: CalendarEditComputation
+  try {
+    computed = computeCalendarEdit(event, intent)
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    await sendMessage(chatId, `Kunne ikke beregne den nye tid: ${error}`)
+    return { status: 'processed', reason: 'calendar_edit_time_failed' }
+  }
+
+  try {
+    const updated = await updateEvent(event.id, computed.patch)
+    const start = updated.start?.dateTime ? new Date(updated.start.dateTime) : computed.start
+    const end = updated.end?.dateTime ? new Date(updated.end.dateTime) : computed.end
+    await sendMessage(
+      chatId,
+      formatCalendarEditConfirmation(updated.summary || event.summary, start, end)
+    )
+    return { status: 'processed', reason: 'calendar_edit_updated' }
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    await sendMessage(chatId, `Kunne ikke rette kalenderen: ${error}`)
+    return { status: 'processed', reason: 'calendar_edit_update_failed' }
   }
 }
 
@@ -1136,6 +1450,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
       'Hej Gustav. Send tekst eller voicenote til capture. Brug /ask <spørgsmål> til at spørge din second brain.'
     )
     return { status: 'processed', reason: 'command_help' }
+  }
+
+  // Kalender-edit går uden om capture/action/veto: Gustav beder eksplicit om at
+  // rette en eksisterende event, så vi PATCHer Google Calendar direkte.
+  if (msg.text && looksLikeCalendarEdit(msg.text)) {
+    let intent: CalendarEditIntent = { isEditIntent: false }
+    try {
+      intent = await detectCalendarEditIntent(msg.text)
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      await sendMessage(msg.chat.id, `Kunne ikke forstå kalender-rettelsen lige nu: ${error}`)
+      return { status: 'processed', reason: 'calendar_edit_intent_failed' }
+    }
+    if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
   }
 
   // Aktivitets-start har forrang over almindelig capture. Pre-filtrér med

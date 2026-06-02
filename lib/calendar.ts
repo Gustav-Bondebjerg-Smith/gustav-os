@@ -27,6 +27,11 @@ export type CalendarInsertPayload = {
   description?: string
 }
 
+export type CalendarUpdatePayload = {
+  start?: string | Date
+  end?: string | Date
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`Mangler ${name} i env`)
@@ -116,5 +121,37 @@ export async function insertEvent(payload: CalendarInsertPayload): Promise<Googl
     body: JSON.stringify(body),
   })
   if (!r.ok) throw new Error(`Calendar insert HTTP ${r.status}: ${await r.text()}`)
+  return (await r.json()) as GoogleCalendarEvent
+}
+
+export async function updateEvent(
+  eventId: string,
+  payload: CalendarUpdatePayload
+): Promise<GoogleCalendarEvent> {
+  if (!eventId) throw new Error('eventId er påkrævet')
+  if (!payload.start && !payload.end) throw new Error('start eller end er påkrævet')
+
+  const token = await getAccessToken(WRITE_SCOPES)
+  const body: Record<string, unknown> = {}
+  if (payload.start) {
+    body.start = {
+      dateTime: toGoogleDateTime(payload.start),
+      timeZone: 'Europe/Copenhagen',
+    }
+  }
+  if (payload.end) {
+    body.end = {
+      dateTime: toGoogleDateTime(payload.end),
+      timeZone: 'Europe/Copenhagen',
+    }
+  }
+
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(getCalendarId())}/events/${encodeURIComponent(eventId)}`
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`Calendar update HTTP ${r.status}: ${await r.text()}`)
   return (await r.json()) as GoogleCalendarEvent
 }
