@@ -873,6 +873,28 @@ async function handleVeto(msg: TelegramMessage): Promise<HandleResult> {
   return { status: 'processed', reason: 'vetoed_action' }
 }
 
+// Kerne-recall: slår op i second brain og svarer. Bruges af både /ask
+// (tekst-kommando) og recall-kategorien i triagen (hverdagssprog + voice).
+// label giver audit-reason: "ask" -> ask_answered/ask_failed, "recall" -> recall_*.
+// Read-only, så ingen dobbelt-gate: triagen kan rute hertil på egen hånd.
+async function answerQuestion(
+  chatId: number,
+  question: string,
+  label: 'ask' | 'recall'
+): Promise<HandleResult> {
+  await sendChatAction(chatId)
+  try {
+    const { answer, sources } = await ask(question)
+    const srcText = sources.length ? '\n\n' + formatSources(sources) : ''
+    await sendMessage(chatId, answer + srcText)
+    return { status: 'processed', reason: `${label}_answered` }
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    await sendMessage(chatId, `Kunne ikke svare lige nu: ${error}`)
+    return { status: 'processed', reason: `${label}_failed` }
+  }
+}
+
 async function handleAsk(msg: TelegramMessage): Promise<HandleResult> {
   const question = (msg.text || '').replace(/^\/ask\s*/i, '').trim()
   if (!question) {
@@ -882,18 +904,7 @@ async function handleAsk(msg: TelegramMessage): Promise<HandleResult> {
     )
     return { status: 'processed', reason: 'empty_ask' }
   }
-
-  await sendChatAction(msg.chat.id)
-  try {
-    const { answer, sources } = await ask(question)
-    const srcText = sources.length ? '\n\n' + formatSources(sources) : ''
-    await sendMessage(msg.chat.id, answer + srcText)
-    return { status: 'processed', reason: 'ask_answered' }
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e)
-    await sendMessage(msg.chat.id, `Kunne ikke svare lige nu: ${error}`)
-    return { status: 'processed', reason: 'ask_failed' }
-  }
+  return answerQuestion(msg.chat.id, question, 'ask')
 }
 
 // content + source udledes nu af handleTelegramUpdate (voice transskriberes dér,
@@ -1181,6 +1192,7 @@ type MessageCategory =
   | 'activity_stop'
   | 'calendar_edit'
   | 'calendar_delete'
+  | 'recall'
   | 'note'
 
 async function triageMessageIntent(
@@ -1200,11 +1212,13 @@ async function triageMessageIntent(
     '- "activity_stop": Gustav holder op med eller pauser sin nuværende aktivitet LIGE NU uden at starte en ny. Fx "så er jeg færdig", "holder lige en pause", "det var det for i dag".',
     '- "calendar_edit": Gustav vil RETTE tiden på en aftale der ALLEREDE findes i dag. Fx "træningen rykkede til tre", "mødet trak ud til halv fem", "lad os sige uni gik til nu".',
     '- "calendar_delete": Gustav vil FJERNE eller aflyse en aftale der allerede findes. Fx "den frokost ryger ud", "jeg dropper tandlægen i morgen".',
-    '- "note": ALT andet. En tanke, ide, observation, et spørgsmål, noget vagt eller fremtidigt, ELLER en NY aftale der skal oprettes. Dette er standardvalget.',
+    '- "recall": Gustav SPØRGER assistenten om noget den kan slå op i hans egne tidligere noter, captures eller planer - typisk hvad han skulle huske, lave eller havde planlagt. Fx "hvad skulle jeg nå i dag", "hvad havde jeg af opgaver", "hvad sagde jeg om eksamen i går", "hvornår skulle jeg ringe til mor".',
+    '- "note": ALT andet. En tanke, ide, observation, et retorisk/reflekterende spørgsmål, noget vagt eller fremtidigt, en besked der GIVER assistenten info ("husk at ..."), ELLER en NY aftale der skal oprettes. Dette er standardvalget.',
     '',
     'Regler:',
     '- activity_start/activity_stop KUN når handlingen sker NU - ikke fortid ("startede i morges") eller fremtid ("starter kl 15").',
     '- En NY aftale der skal i kalenderen ("møde med Anna fredag kl 14") er "note", IKKE calendar_edit. Edit og delete er kun ændring eller fjernelse af noget der allerede findes.',
+    '- "recall" er KUN når Gustav beder om at FÅ noget at vide fra det han tidligere har gemt. En besked der GIVER ny info ("husk at ringe til mor") er "note". Et retorisk spørgsmål han bare tænker højt ("hvorfor er jeg så træt") er også "note".',
     '- Er du i tvivl, vælg "note". Det er altid sikkert at gemme noget som note.',
   ].join('\n')
 
@@ -1240,6 +1254,7 @@ async function triageMessageIntent(
     'activity_stop',
     'calendar_edit',
     'calendar_delete',
+    'recall',
     'note',
   ]
   return valid.includes(parsed.category as MessageCategory)
@@ -1636,6 +1651,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
       console.error('calendar edit (fallback) fejlede:', e)
     }
     if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
+  } else if (category === 'recall') {
+    // Read-only opslag i second brain. Voice + tekst rammer her, så
+    // hverdagssprogs-spørgsmål ("hvad skulle jeg nå i dag") virker uden /ask.
+    return answerQuestion(msg.chat.id, text, 'recall')
   } else if (category === 'calendar_delete') {
     return handleCapture(msg, text, source, { forceDelete: true })
   }
