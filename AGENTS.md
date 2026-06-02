@@ -64,7 +64,8 @@ Gustav OS er et personligt AI operating system. Det er en hobby-build Gustav sel
 - npm: brug `npm_config_cache=/tmp/gustav-npm-cache` foran npm-installs (root-ejet `~/.npm`).
 - Google service account-nøgle ligger på én linje i `.env.local` med tekst-`\n`. Fold ud med `.replace(/\\n/g, '\n')` før brug.
 - JS-regex `\b` matcher IKKE æ/ø/å (kun ASCII tæller som word-tegn). En frase som "starter på" får derfor aldrig en word-boundary efter "på" og matchede aldrig. Brug Unicode-grænser `(?<![\p{L}\p{N}]) ... (?![\p{L}\p{N}])` med `u`-flag i stedet (se `ACTIVITY_TRIGGER` i `lib/telegram-webhook.ts`). Gælder alle danske trigger-regexes.
-- `npm run lint`/eslint kan hænge (idle, ~0 CPU) under agent-sandboxen. `npx tsc --noEmit` er den pålidelige type-check; kør eslint uden sandbox hvis den hænger.
+- Telegram-routingen i `handleTelegramUpdate` tjekker veto FØRST, og `VETO_WORDS` indeholder "stop". En ny trigger-kommando må derfor ALDRIG bruge bare "stop" alene - beskeden bliver opfattet som veto på et kalenderforslag, før den når kommando-checket. Stop-tracking-kommandoen bruger derfor "stopper"/"slutter"/"afslutter" osv., aldrig bare "stop" (se `ACTIVITY_STOP_TRIGGER`).
+- `npm run lint`/eslint OG `npx tsc --noEmit` kan begge hænge (idle, ~0 CPU, minutter uden at fuldføre) på Gustavs maskine - observeret både MED og UDEN agent-sandbox (2026-06-02: tsc hang ~11 min på 2,6s CPU-tid, altså reelt blokeret, ikke bare langsom). Det er miljøet (formentlig endpoint-scanning af hver fil-read), ikke koden. Fallback: stol på Vercels build som autoritativ type-check - et FEJLET Vercel-build erstatter IKKE det live deploy, så prod er sikkert selvom du pusher uden lokal grøn check. Prøv evt. den lokale check igen når maskinen er mindre belastet.
 
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know

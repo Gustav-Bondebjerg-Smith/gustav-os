@@ -23,6 +23,12 @@ const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'can
 // u-flag. Holdes i sync med trigger-listen i detectActivityStart's system-prompt.
 const ACTIVITY_TRIGGER = /(?<![\p{L}\p{N}])(starter på|starter med|går i gang med|begynder(?: på| med)?|skifter til|påbegynder|tager fat på)(?![\p{L}\p{N}])/iu
 
+// Stop-/afslut-trigger: lukker den aktive aktivitet UDEN at starte en ny.
+// Bevidst IKKE bare "stop" alene - det er allerede et veto-ord (VETO_WORDS) og
+// fanges højere oppe i routingen. Samme Unicode-grænse-trick som ACTIVITY_TRIGGER
+// pga. æ/ø/å. Holdes i sync med trigger-listen i detectActivityStop's system-prompt.
+const ACTIVITY_STOP_TRIGGER = /(?<![\p{L}\p{N}])(slutter(?: på| med)?|slut|stopper(?: med)?|afslutter|holder pause|tager (?:en )?pause|pause|færdig(?: med)?|done)(?![\p{L}\p{N}])/iu
+
 type TelegramChat = {
   id: number
 }
@@ -742,6 +748,11 @@ function looksLikeActivityStart(text: string | null | undefined): boolean {
   return ACTIVITY_TRIGGER.test(text)
 }
 
+function looksLikeActivityStop(text: string | null | undefined): boolean {
+  if (!text) return false
+  return ACTIVITY_STOP_TRIGGER.test(text)
+}
+
 async function detectActivityStart(text: string): Promise<ActivityIntent> {
   if (!text || text.trim().length < 3) {
     return { isActivityStart: false, activityName: null }
@@ -800,6 +811,59 @@ async function detectActivityStart(text: string): Promise<ActivityIntent> {
     return { isActivityStart: false, activityName: null }
   }
   return { isActivityStart: true, activityName: parsed.activityName.trim() }
+}
+
+// Bekræfter at en stop-/afslut-besked faktisk betyder "luk den aktive aktivitet
+// nu". Ingen navne-udtrækning nødvendig (vi lukker bare den pending der findes),
+// så Haiku skal kun sige ja/nej. Samme prefilter-så-Haiku-mønster som start.
+async function detectActivityStop(text: string): Promise<boolean> {
+  if (!text || text.trim().length < 3) return false
+
+  const system = [
+    'Du klassificerer om en kort dansk besked betyder at brugeren STOPPER eller AFSLUTTER sin nuværende aktivitet lige nu (inkl. at holde pause).',
+    'Svar KUN med JSON, intet andet:',
+    '{"isActivityStop": true}',
+    'eller',
+    '{"isActivityStop": false}',
+    '',
+    'Trigger-fraser: "slutter", "slutter på X", "stopper", "afslutter", "holder pause", "tager en pause", "færdig", "færdig med X", "done", "slut" og lignende.',
+    '',
+    'Returner true KUN hvis beskeden udtrykker at brugeren NU holder op med det han er i gang med.',
+    'Returner false hvis beskeden er:',
+    '- en START på en ny aktivitet ("starter på X", "skifter til X")',
+    '- en note/ide/refleksion der blot nævner at slutte ("glæder mig til at være færdig med eksamen")',
+    '- en aftale eller fortidig/fremtidig hændelse ("jeg blev færdig i går")',
+    '- en slet-besked ("slet aftalen") eller en /-kommando',
+    '- generel tekst uden en klar nu-stop',
+  ].join('\n')
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: ACTIVITY_DETECTOR_MODEL,
+      max_tokens: 50,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: text }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: { isActivityStop?: boolean }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return false
+  }
+  return parsed.isActivityStop === true
 }
 
 async function getPendingActivity(chatId: number): Promise<PendingActivityRow | null> {
@@ -968,6 +1032,92 @@ async function handleActivityStart(
   return { status: 'processed', reason: 'activity_started' }
 }
 
+// Stop/afslut: lukker den aktive aktivitet ved at indsætte en kalenderbegivenhed
+// fra dens started_at til nu, og rydder så pending UDEN at starte en ny.
+// Modstykket til "skift" i handleActivityStart (som lukker + åbner i ét).
+async function handleActivityStop(msg: TelegramMessage): Promise<HandleResult> {
+  const chatId = msg.chat.id
+  // Samme som start: brug beskedens eget tidsstempel som aktivitets-grænse.
+  const now = msg.date ? new Date(msg.date * 1000) : new Date()
+
+  let pending: PendingActivityRow | null = null
+  try {
+    pending = await getPendingActivity(chatId)
+  } catch (e) {
+    console.error('pending_activity lookup fejlede (stop):', e)
+    await sendMessage(
+      chatId,
+      `Kunne ikke læse pending aktivitet: ${e instanceof Error ? e.message : String(e)}`
+    )
+    return { status: 'processed', reason: 'activity_lookup_failed' }
+  }
+
+  if (!pending) {
+    await sendMessage(chatId, 'Der er ingen aktiv aktivitet at afslutte.')
+    return { status: 'processed', reason: 'activity_stop_no_pending' }
+  }
+
+  const startDate = new Date(pending.started_at)
+  const durationMs = now.getTime() - startDate.getTime()
+
+  // Indsæt kalender FØR vi rydder pending, så aktiviteten ikke går tabt hvis
+  // indsætningen fejler. Samme varigheds-guard som ved skift: spring kalenderen
+  // over hvis varigheden er ugyldig (<= 0) eller urimelig lang (glemt at stoppe).
+  let inserted = false
+  if (durationMs > 0 && durationMs <= MAX_ACTIVITY_MS) {
+    try {
+      await insertEvent({
+        summary: pending.activity_name,
+        start: startDate,
+        end: now,
+        description: TRACKING_EVENT_TAG,
+      })
+      inserted = true
+    } catch (e) {
+      console.error('Kalender-indsætning ved stop fejlede:', e)
+      await sendMessage(
+        chatId,
+        `Kunne ikke indsætte "${pending.activity_name}" i kalenderen: ${e instanceof Error ? e.message : String(e)}. Pending bevares.`
+      )
+      return { status: 'processed', reason: 'activity_stop_calendar_failed' }
+    }
+  }
+
+  try {
+    await deletePendingActivity(chatId)
+  } catch (e) {
+    console.error('kunne ikke rydde pending efter stop:', e)
+    await sendMessage(
+      chatId,
+      `${inserted ? `Indsatte "${pending.activity_name}" i kalenderen, men k` : 'K'}unne ikke rydde pending aktivitet: ${e instanceof Error ? e.message : String(e)}`
+    )
+    return { status: 'processed', reason: 'activity_stop_clear_failed' }
+  }
+
+  if (inserted) {
+    const startTime = fmtTimeColonCph(startDate)
+    const endTime = fmtTimeColonCph(now)
+    await sendMessage(
+      chatId,
+      `⏹️ Stoppet: ${pending.activity_name} (${startTime}–${endTime}). Ingen aktiv aktivitet nu.`
+    )
+    return { status: 'processed', reason: 'activity_stopped' }
+  }
+  if (durationMs <= 0) {
+    await sendMessage(
+      chatId,
+      `⏹️ Stoppet: ${pending.activity_name}. Sprang kalenderen over (ugyldig varighed).`
+    )
+  } else {
+    const hours = Math.round(durationMs / 3600000)
+    await sendMessage(
+      chatId,
+      `⏹️ Stoppet: ${pending.activity_name}. Havde kørt ~${hours}t - for langt til at logge automatisk, så jeg sprang kalenderen over.`
+    )
+  }
+  return { status: 'processed', reason: 'activity_stopped_no_calendar' }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<HandleResult> {
   const msg = update.message
   if (!msg) return { status: 'ignored', reason: 'no_message' }
@@ -1000,6 +1150,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
     if (intent.isActivityStart && intent.activityName) {
       return handleActivityStart(msg, intent.activityName)
     }
+  }
+
+  // Aktivitets-stop: lukker den aktive aktivitet uden at starte en ny. Tjekkes
+  // EFTER start (en "starter på"-besked rammer aldrig stop-prefilteret) og bruger
+  // samme prefilter-så-Haiku-mønster. Bemærk: bare "stop" er et veto-ord og er
+  // allerede fanget højere oppe.
+  if (msg.text && looksLikeActivityStop(msg.text)) {
+    let isStop = false
+    try {
+      isStop = await detectActivityStop(msg.text)
+    } catch (e) {
+      console.error('activity stop detection fejlede (falder tilbage til capture):', e)
+    }
+    if (isStop) return handleActivityStop(msg)
   }
 
   return handleCapture(msg)
