@@ -14,6 +14,12 @@ create table if not exists pending_activity (
   updated_at    timestamptz not null default now()
 );
 
-create index if not exists idx_pending_activity_chat on pending_activity (chat_id);
+-- Intet separat index på chat_id: UNIQUE-constraint ovenfor giver allerede et
+-- index på kolonnen, så et ekstra create index ville være redundant.
 
+-- RLS slås til UDEN policies med vilje: appen tilgår kun denne tabel via
+-- service_role-klienten (getSupabase()), som bypasser RLS. Med RLS aktiveret og
+-- nul policies nægtes al adgang for anon/authenticated = sikker deny-by-default.
+-- Bygger du senere UI mod tabellen med en anon/authenticated nøgle, så TILFØJ
+-- policies her.
 alter table pending_activity enable row level security;

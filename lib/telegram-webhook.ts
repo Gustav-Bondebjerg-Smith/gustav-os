@@ -17,7 +17,11 @@ const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'can
 // Hurtig pre-filter inden vi kalder Haiku for at klassificere intent. Sparer
 // et model-kald på de fleste beskeder. Hvis nye trigger-fraser skal med, så
 // tilføj dem her OG i system-prompten i detectActivityStart.
-const ACTIVITY_TRIGGER = /\b(starter på|starter med|går i gang med|begynder( på| med)?|skifter til|påbegynder|tager fat på)\b/i
+// NB: \b virker ikke med æ/ø/å i JS (kun ASCII tæller som word-tegn), så fraser
+// der ender på "på" ("starter på", "tager fat på") matchede ALDRIG den gamle
+// regex. Derfor Unicode-grænser: (?<![\p{L}\p{N}]) ... (?![\p{L}\p{N}]) med
+// u-flag. Holdes i sync med trigger-listen i detectActivityStart's system-prompt.
+const ACTIVITY_TRIGGER = /(?<![\p{L}\p{N}])(starter på|starter med|går i gang med|begynder(?: på| med)?|skifter til|påbegynder|tager fat på)(?![\p{L}\p{N}])/iu
 
 type TelegramChat = {
   id: number
@@ -29,6 +33,7 @@ type TelegramVoice = {
 
 type TelegramMessage = {
   message_id: number
+  date?: number // unix-sekunder; hvornår beskeden blev sendt (bruges som aktivitets-tidsstempel)
   chat: TelegramChat
   text?: string
   voice?: TelegramVoice
@@ -708,6 +713,14 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
   return { status: 'processed', reason: 'capture_saved' }
 }
 
+// Tids-tracking-events tagges i description så de kan filtreres/findes i kalenderen.
+const TRACKING_EVENT_TAG = 'Tids-tracking via Telegram'
+
+// Hvis en aktivitet har "kørt" længere end dette (typisk fordi Gustav glemte at
+// skifte, fx natten over), springer vi kalender-indsætningen over, så vi ikke
+// forurener kalenderen med en kæmpe forkert blok. Tunes via MAX_ACTIVITY_HOURS.
+const MAX_ACTIVITY_MS = (Number(process.env.MAX_ACTIVITY_HOURS) || 16) * 3600000
+
 // Tids-tracking via aktivitets-start.
 // Flow: Gustav skriver "starter på X". Hvis der allerede er en pending aktivitet
 // for hans chat, lukkes den ved at indsætte en kalenderbegivenhed fra dens
@@ -820,6 +833,12 @@ async function upsertPendingActivity(
   if (error) throw new Error(`pending_activity upsert-fejl: ${error.message}`)
 }
 
+async function deletePendingActivity(chatId: number): Promise<void> {
+  const sb = getSupabase()
+  const { error } = await sb.from('pending_activity').delete().eq('chat_id', chatId)
+  if (error) throw new Error(`pending_activity delete-fejl: ${error.message}`)
+}
+
 // "HH:MM" i Europe/Copenhagen. Bruger kolon (ikke punktum) fordi det er
 // formatet for tids-tracking-bekræftelser.
 function fmtTimeColonCph(value: string | Date): string {
@@ -828,7 +847,7 @@ function fmtTimeColonCph(value: string | Date): string {
     timeZone: 'Europe/Copenhagen',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23', // h23 (ikke hour12:false) garanterer 00-23, aldrig "24:00" ved midnat
   }).formatToParts(date)
   const h = parts.find((p) => p.type === 'hour')?.value ?? '00'
   const m = parts.find((p) => p.type === 'minute')?.value ?? '00'
@@ -840,7 +859,10 @@ async function handleActivityStart(
   activityName: string
 ): Promise<HandleResult> {
   const chatId = msg.chat.id
-  const now = new Date()
+  // Brug beskedens eget tidsstempel (msg.date) i stedet for serverens new Date():
+  // det er hvornår Gustav faktisk sendte beskeden (korrekt aktivitets-grænse, ikke
+  // forskudt af Haiku-latency) og gør tiden deterministisk hvis updaten gen-behandles.
+  const now = msg.date ? new Date(msg.date * 1000) : new Date()
 
   let pending: PendingActivityRow | null = null
   try {
@@ -856,39 +878,79 @@ async function handleActivityStart(
 
   if (pending) {
     const startDate = new Date(pending.started_at)
-    try {
-      await insertEvent({
-        summary: pending.activity_name,
-        start: startDate,
-        end: now,
-      })
-    } catch (e) {
-      console.error('Kalender-indsætning for tids-tracking fejlede:', e)
-      await sendMessage(
-        chatId,
-        `Kunne ikke indsætte "${pending.activity_name}" i kalenderen: ${e instanceof Error ? e.message : String(e)}. Pending bevares.`
-      )
-      return { status: 'processed', reason: 'activity_calendar_failed' }
+    const durationMs = now.getTime() - startDate.getTime()
+    let inserted = false
+
+    // Indsæt kun et kalender-event hvis varigheden er gyldig OG rimelig.
+    // durationMs <= 0: clock-skew eller gen-behandling. > MAX: glemt at skifte.
+    if (durationMs > 0 && durationMs <= MAX_ACTIVITY_MS) {
+      try {
+        await insertEvent({
+          summary: pending.activity_name,
+          start: startDate,
+          end: now,
+          description: TRACKING_EVENT_TAG,
+        })
+        inserted = true
+      } catch (e) {
+        console.error('Kalender-indsætning for tids-tracking fejlede:', e)
+        await sendMessage(
+          chatId,
+          `Kunne ikke indsætte "${pending.activity_name}" i kalenderen: ${e instanceof Error ? e.message : String(e)}. Pending bevares.`
+        )
+        return { status: 'processed', reason: 'activity_calendar_failed' }
+      }
     }
 
     try {
       await upsertPendingActivity(chatId, activityName, now)
     } catch (e) {
-      console.error('pending_activity upsert fejlede efter kalender-insert:', e)
-      await sendMessage(
-        chatId,
-        `Indsatte "${pending.activity_name}" i kalenderen, men kunne ikke gemme ny pending: ${e instanceof Error ? e.message : String(e)}`
-      )
+      console.error('pending_activity upsert fejlede efter kalender-håndtering:', e)
+      // Hvis vi NÅEDE at indsætte X, så ryd pending, så X ikke bliver indsat igen
+      // ved næste "starter på" (ellers en dublet med samme started_at). Hvis vi
+      // IKKE indsatte, er den gamle pending stadig korrekt og bevares.
+      if (inserted) {
+        try {
+          await deletePendingActivity(chatId)
+        } catch (delErr) {
+          console.error('kunne ikke rydde pending efter upsert-fejl:', delErr)
+        }
+        await sendMessage(
+          chatId,
+          `Indsatte "${pending.activity_name}" i kalenderen, men kunne ikke gemme ny pending. Pending er ryddet - skriv "starter på ${activityName}" igen.`
+        )
+      } else {
+        await sendMessage(
+          chatId,
+          `Kunne ikke gemme ny pending: ${e instanceof Error ? e.message : String(e)}`
+        )
+      }
       return { status: 'processed', reason: 'activity_upsert_failed' }
     }
 
-    const startTime = fmtTimeColonCph(startDate)
-    const endTime = fmtTimeColonCph(now)
-    await sendMessage(
-      chatId,
-      `✅ Indsat: ${pending.activity_name} (${startTime}–${endTime}). Nu i gang: ${activityName}`
-    )
-    return { status: 'processed', reason: 'activity_switched' }
+    if (inserted) {
+      const startTime = fmtTimeColonCph(startDate)
+      const endTime = fmtTimeColonCph(now)
+      await sendMessage(
+        chatId,
+        `✅ Indsat: ${pending.activity_name} (${startTime}–${endTime}). Nu i gang: ${activityName}`
+      )
+    } else if (durationMs <= 0) {
+      await sendMessage(
+        chatId,
+        `▶️ Nu i gang: ${activityName} (${fmtTimeColonCph(now)}). Sprang kalenderen over for "${pending.activity_name}" (ugyldig varighed).`
+      )
+    } else {
+      const hours = Math.round(durationMs / 3600000)
+      await sendMessage(
+        chatId,
+        `▶️ Nu i gang: ${activityName} (${fmtTimeColonCph(now)}). "${pending.activity_name}" havde kørt ~${hours}t - for langt til at logge automatisk, så jeg sprang kalenderen over.`
+      )
+    }
+    return {
+      status: 'processed',
+      reason: inserted ? 'activity_switched' : 'activity_switched_no_calendar',
+    }
   }
 
   // Ingen pending: gem bare den nye uden at indsætte noget.

@@ -63,6 +63,8 @@ Gustav OS er et personligt AI operating system. Det er en hobby-build Gustav sel
 - Claude Code-shellen har en TOM `ANTHROPIC_API_KEY` der skygger for `.env.local`. Kør scripts som `node scripts/x.mjs` (de tvinger filen igennem via `load-env.mjs`). Kør dev som `env -u ANTHROPIC_API_KEY npm run dev` når Anthropic skal bruges lokalt.
 - npm: brug `npm_config_cache=/tmp/gustav-npm-cache` foran npm-installs (root-ejet `~/.npm`).
 - Google service account-nøgle ligger på én linje i `.env.local` med tekst-`\n`. Fold ud med `.replace(/\\n/g, '\n')` før brug.
+- JS-regex `\b` matcher IKKE æ/ø/å (kun ASCII tæller som word-tegn). En frase som "starter på" får derfor aldrig en word-boundary efter "på" og matchede aldrig. Brug Unicode-grænser `(?<![\p{L}\p{N}]) ... (?![\p{L}\p{N}])` med `u`-flag i stedet (se `ACTIVITY_TRIGGER` i `lib/telegram-webhook.ts`). Gælder alle danske trigger-regexes.
+- `npm run lint`/eslint kan hænge (idle, ~0 CPU) under agent-sandboxen. `npx tsc --noEmit` er den pålidelige type-check; kør eslint uden sandbox hvis den hænger.
 
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
