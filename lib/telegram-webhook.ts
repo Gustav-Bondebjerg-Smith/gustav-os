@@ -32,7 +32,7 @@ const ACTIVITY_STOP_TRIGGER = /(?<![\p{L}\p{N}])(slutter(?: på| med)?|slut|stop
 
 // Kalender-edit prefilter. Matcher kun sandsynlige edit-kommandoer før Haiku
 // afgør intent, så almindelige captures ikke betaler for et model-kald.
-const CALENDAR_EDIT_TRIGGER = /(?<![\p{L}\p{N}])(?:ret(?:te|ter|tede)?|ændr(?:e|er|ede)?|flyt(?:te|ter|tede)?|startede[\s\S]{0,80}først|slut(?:tede|ter|tid)?|gik til|skubbede[\s\S]{0,80}til)(?![\p{L}\p{N}])/iu
+const CALENDAR_EDIT_TRIGGER = /(?<![\p{L}\p{N}])(?:ret(?:te|ter|tede)?|ændr(?:e|er|ede)?|flyt(?:te|ter|tede)?|startede[\s\S]{0,80}først|slut(?:tede|ter|tid)?|(?:gik|går) til|skubbede[\s\S]{0,80}til)(?![\p{L}\p{N}])/iu
 
 type TelegramChat = {
   id: number
@@ -250,7 +250,7 @@ async function transcribeVoice(fileId: string): Promise<string> {
   return transcribeAudio(bytes, name)
 }
 
-function nowInCopenhagen(): string {
+function nowInCopenhagen(value: Date = new Date()): string {
   return new Intl.DateTimeFormat('da-DK', {
     timeZone: 'Europe/Copenhagen',
     weekday: 'long',
@@ -259,7 +259,7 @@ function nowInCopenhagen(): string {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date())
+  }).format(value)
 }
 
 async function proposeCalendarEvent(captureContent: string): Promise<CalendarProposal | null> {
@@ -474,11 +474,15 @@ function looksLikeCalendarEdit(text: string | null | undefined): boolean {
   return CALENDAR_EDIT_TRIGGER.test(text)
 }
 
-async function detectCalendarEditIntent(text: string): Promise<CalendarEditIntent> {
+async function detectCalendarEditIntent(
+  text: string,
+  now: Date = new Date()
+): Promise<CalendarEditIntent> {
   if (!text || text.trim().length < 3) return { isEditIntent: false }
 
   const system = [
     'Du klassificerer om en kort dansk Telegram-besked beder om at RETTE, ÆNDRE eller FLYTTE en eksisterende kalenderbegivenhed.',
+    `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}. Aktuel tid som HH:MM: ${fmtTimeColonCph(now)}.`,
     'Svar KUN med JSON, intet andet.',
     '',
     'Hvis beskeden er en kalender-edit:',
@@ -488,12 +492,13 @@ async function detectCalendarEditIntent(text: string): Promise<CalendarEditInten
     '{"isEditIntent": false}',
     '',
     'editType-regler:',
-    '- "end": brug når brugeren retter sluttiden. Eksempler: "unilæsning sluttede 13:30", "X gik til 15:00", "ret sluttid til 16:15".',
+    '- "end": brug når brugeren retter sluttiden. Eksempler: "unilæsning sluttede 13:30", "X gik til 15:00", "X går til nu", "ret sluttid til 16:15".',
     '- "start": brug når brugeren retter starttiden, men sluttiden bevares. Eksempler: "jeg startede AI arbejde først 18:20", "ret starttid på X til 09:30".',
     '- "shift": brug når hele eventet flyttes, og varigheden skal bevares. Eksempler: "flyt træning til 14:30", "skubbede læsning til 11:00", "ændre møde til 10:00" hvis der ikke står start/slut.',
     '',
-    'eventHint er kun navnet på eventet, uden ord som ret/ændre/flyt/startede/først/sluttede/gik til/skubbede/til/klokken og uden tidspunkt.',
+    'eventHint er kun navnet på eventet, uden ord som ret/ændre/flyt/startede/først/sluttede/gik/går til/skubbede/til/klokken og uden tidspunkt.',
     'newTime skal være 24-timers HH:MM, fx "09:05" eller "18:20".',
+    `Hvis brugeren skriver "nu", skal newTime være den aktuelle HH:MM ovenfor: "${fmtTimeColonCph(now)}".`,
     '',
     'Returner false hvis beskeden er en ny aftale, en slet-besked, en aktivitet-start/stop uden kalender-edit, en note/ide/refleksion, eller hvis der ikke er en konkret tid.',
   ].join('\n')
@@ -532,7 +537,7 @@ async function detectCalendarEditIntent(text: string): Promise<CalendarEditInten
 
   const editTypes: CalendarEditType[] = ['end', 'start', 'shift']
   const editType = parsed.editType
-  const newTime = parsed.newTime ? normalizeEditTime(parsed.newTime) : null
+  const newTime = parsed.newTime ? normalizeEditTime(parsed.newTime, now) : null
   const eventHint = parsed.eventHint?.trim()
   if (
     !parsed.isEditIntent ||
@@ -669,8 +674,9 @@ function computeCalendarEdit(
   return { patch: { start, end }, start, end }
 }
 
-function normalizeEditTime(value: string): string | null {
+function normalizeEditTime(value: string, now?: Date): string | null {
   const normalized = value.trim().replace('.', ':')
+  if (/^(nu|now)$/i.test(normalized)) return now ? fmtTimeColonCph(now) : null
   const match = normalized.match(/^([01]?\d|2[0-3]):([0-5]\d)$/)
   if (!match) return null
   return `${match[1].padStart(2, '0')}:${match[2]}`
@@ -1455,9 +1461,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
   // Kalender-edit går uden om capture/action/veto: Gustav beder eksplicit om at
   // rette en eksisterende event, så vi PATCHer Google Calendar direkte.
   if (msg.text && looksLikeCalendarEdit(msg.text)) {
+    const messageTime = msg.date ? new Date(msg.date * 1000) : new Date()
     let intent: CalendarEditIntent = { isEditIntent: false }
     try {
-      intent = await detectCalendarEditIntent(msg.text)
+      intent = await detectCalendarEditIntent(msg.text, messageTime)
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e)
       await sendMessage(msg.chat.id, `Kunne ikke forstå kalender-rettelsen lige nu: ${error}`)
