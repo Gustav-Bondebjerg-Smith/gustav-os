@@ -12,6 +12,7 @@ import { classify, VALID_AREAS, type Classification } from './capture'
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
 const CALENDAR_EDIT_MODEL = 'claude-haiku-4-5-20251001'
+const TRIAGE_MODEL = 'claude-haiku-4-5-20251001'
 const WHISPER_MODEL = 'whisper-1'
 const VETO_WORDS = new Set(['nej', 'veto', 'stop', 'annuller', 'annullér', 'cancel', 'skip', 'no'])
 
@@ -895,33 +896,17 @@ async function handleAsk(msg: TelegramMessage): Promise<HandleResult> {
   }
 }
 
-async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
+// content + source udledes nu af handleTelegramUpdate (voice transskriberes dér,
+// så transskriptionen kan løbe gennem intent-routingen før den ender her).
+// opts.forceDelete sættes når triagen har set en slet-intent i hverdagssprog,
+// hvor DELETE_INTENT-regexen nedenfor ikke ville ramme.
+async function handleCapture(
+  msg: TelegramMessage,
+  content: string,
+  source: 'telegram_text' | 'telegram_voice',
+  opts: { forceDelete?: boolean } = {}
+): Promise<HandleResult> {
   const sb = getSupabase()
-
-  let content: string | null = null
-  let source: 'telegram_text' | 'telegram_voice' | null = null
-
-  if (msg.text) {
-    content = msg.text
-    source = 'telegram_text'
-  } else if (msg.voice) {
-    await sendChatAction(msg.chat.id)
-    try {
-      content = await transcribeVoice(msg.voice.file_id)
-    } catch (e) {
-      console.error('Transskription fejlede:', e)
-      await sendMessage(msg.chat.id, 'Kunne ikke transskribere din voicenote. Prøv igen om lidt.')
-      return { status: 'processed', reason: 'voice_transcription_failed' }
-    }
-    source = 'telegram_voice'
-    if (!content) {
-      await sendMessage(msg.chat.id, 'Jeg fik ingen tekst ud af din voicenote. Prøv at tale lidt tydeligere.')
-      return { status: 'processed', reason: 'empty_voice_transcript' }
-    }
-  } else {
-    await sendMessage(msg.chat.id, 'Jeg kan tage tekst og voicenotes. Send en af delene.')
-    return { status: 'processed', reason: 'unsupported_message' }
-  }
 
   const { data, error } = await sb
     .from('raw_captures')
@@ -973,7 +958,7 @@ async function handleCapture(msg: TelegramMessage): Promise<HandleResult> {
   const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
   const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
 
-  if (hasDeleteIntent(content)) {
+  if (opts.forceDelete || hasDeleteIntent(content)) {
     let attempt: DeleteAttempt = { match: null, candidates: [], reason: 'flow fejlede' }
     try {
       attempt = await proposeCalendarDelete(content)
@@ -1184,6 +1169,82 @@ async function detectActivityStop(text: string): Promise<boolean> {
     return false
   }
   return parsed.isActivityStop === true
+}
+
+// Hverdagssprog-router. Når INGEN af de hurtige regex-stier ramte, spørger vi
+// Haiku bredt hvad beskeden vil - også uden faste kommando-ord, og også når
+// teksten kommer fra en transskriberet voicenote. Returnerer kun en KATEGORI;
+// den valgte handler bekræfter selv bagefter med sin egen detector (dobbelt-gate
+// mod falske positiver), og alt usikkert falder tilbage til 'note' (= capture).
+type MessageCategory =
+  | 'activity_start'
+  | 'activity_stop'
+  | 'calendar_edit'
+  | 'calendar_delete'
+  | 'note'
+
+async function triageMessageIntent(
+  text: string,
+  now: Date = new Date()
+): Promise<MessageCategory> {
+  if (!text || text.trim().length < 3) return 'note'
+
+  const system = [
+    'Du er router i Gustavs personlige assistent. Afgør hvad en kort dansk besked VIL - også når den er sagt eller skrevet i afslappet hverdagssprog uden faste kommando-ord.',
+    `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}.`,
+    '',
+    'Svar KUN med JSON, intet andet: {"category": "<værdi>"}.',
+    '',
+    'Mulige værdier:',
+    '- "activity_start": Gustav begynder en aktivitet LIGE NU og vil tidstage den. Fx "nu kaster jeg mig over anatomien", "så er det bøgerne", "i gang med frokost", "tid til en løbetur".',
+    '- "activity_stop": Gustav holder op med eller pauser sin nuværende aktivitet LIGE NU uden at starte en ny. Fx "så er jeg færdig", "holder lige en pause", "det var det for i dag".',
+    '- "calendar_edit": Gustav vil RETTE tiden på en aftale der ALLEREDE findes i dag. Fx "træningen rykkede til tre", "mødet trak ud til halv fem", "lad os sige uni gik til nu".',
+    '- "calendar_delete": Gustav vil FJERNE eller aflyse en aftale der allerede findes. Fx "den frokost ryger ud", "jeg dropper tandlægen i morgen".',
+    '- "note": ALT andet. En tanke, ide, observation, et spørgsmål, noget vagt eller fremtidigt, ELLER en NY aftale der skal oprettes. Dette er standardvalget.',
+    '',
+    'Regler:',
+    '- activity_start/activity_stop KUN når handlingen sker NU - ikke fortid ("startede i morges") eller fremtid ("starter kl 15").',
+    '- En NY aftale der skal i kalenderen ("møde med Anna fredag kl 14") er "note", IKKE calendar_edit. Edit og delete er kun ændring eller fjernelse af noget der allerede findes.',
+    '- Er du i tvivl, vælg "note". Det er altid sikkert at gemme noget som note.',
+  ].join('\n')
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': requireEnv('ANTHROPIC_API_KEY'),
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: TRIAGE_MODEL,
+      max_tokens: 50,
+      temperature: 0,
+      system,
+      messages: [{ role: 'user', content: text }],
+    }),
+  })
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
+
+  const j = await r.json()
+  const raw = (j.content?.[0]?.text || '').trim()
+  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  let parsed: { category?: string }
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    return 'note'
+  }
+
+  const valid: MessageCategory[] = [
+    'activity_start',
+    'activity_stop',
+    'calendar_edit',
+    'calendar_delete',
+    'note',
+  ]
+  return valid.includes(parsed.category as MessageCategory)
+    ? (parsed.category as MessageCategory)
+    : 'note'
 }
 
 async function getPendingActivity(chatId: number): Promise<PendingActivityRow | null> {
@@ -1448,23 +1509,61 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
     return { status: 'ignored', reason: 'unknown_chat' }
   }
 
-  if (msg.text && isVetoMessage(msg.text)) return handleVeto(msg)
-  if (msg.text && /^\/ask(\s|$)/i.test(msg.text)) return handleAsk(msg)
-  if (msg.text && msg.text.startsWith('/')) {
-    await sendMessage(
-      msg.chat.id,
-      'Hej Gustav. Send tekst eller voicenote til capture. Brug /ask <spørgsmål> til at spørge din second brain.'
-    )
-    return { status: 'processed', reason: 'command_help' }
+  // Udled beskedens tekst FØR routingen. Voicenotes transskriberes her (én gang),
+  // så transskriptionen løber gennem præcis samme intent-routing som tekst. Før
+  // lå transskriptionen inde i handleCapture, så en voicenote aldrig nåede
+  // activity/stop/edit-stierne og altid endte som note.
+  let source: 'telegram_text' | 'telegram_voice'
+  let text: string
+  if (typeof msg.text === 'string' && msg.text.length > 0) {
+    source = 'telegram_text'
+    text = msg.text
+  } else if (msg.voice) {
+    source = 'telegram_voice'
+    await sendChatAction(msg.chat.id)
+    try {
+      text = await transcribeVoice(msg.voice.file_id)
+    } catch (e) {
+      console.error('Transskription fejlede:', e)
+      await sendMessage(msg.chat.id, 'Kunne ikke transskribere din voicenote. Prøv igen om lidt.')
+      return { status: 'processed', reason: 'voice_transcription_failed' }
+    }
+    if (!text) {
+      await sendMessage(msg.chat.id, 'Jeg fik ingen tekst ud af din voicenote. Prøv at tale lidt tydeligere.')
+      return { status: 'processed', reason: 'empty_voice_transcript' }
+    }
+  } else {
+    await sendMessage(msg.chat.id, 'Jeg kan tage tekst og voicenotes. Send en af delene.')
+    return { status: 'processed', reason: 'unsupported_message' }
   }
+
+  // Veto, /ask og /-kommandoer er rene tekst-kommandoer. En voicenote skal aldrig
+  // kunne vetoe eller ramme en slash-kommando (Whisper kan transskribere "nej"
+  // eller "/ask" upålideligt), så de gælder kun når kilden faktisk er tekst.
+  if (source === 'telegram_text') {
+    if (isVetoMessage(text)) return handleVeto(msg)
+    if (/^\/ask(\s|$)/i.test(text)) return handleAsk(msg)
+    if (text.startsWith('/')) {
+      await sendMessage(
+        msg.chat.id,
+        'Hej Gustav. Send tekst eller voicenote til capture. Brug /ask <spørgsmål> til at spørge din second brain.'
+      )
+      return { status: 'processed', reason: 'command_help' }
+    }
+  }
+
+  const messageTime = msg.date ? new Date(msg.date * 1000) : new Date()
+
+  // ---- Hurtige regex-stier (uændret, live-verificeret adfærd) ----
+  // Rammer en konkret kommando-frase et af mønstrene, går vi direkte til den
+  // rette detector og sparer triage-kaldet nedenfor.
 
   // Kalender-edit går uden om capture/action/veto: Gustav beder eksplicit om at
   // rette en eksisterende event, så vi PATCHer Google Calendar direkte.
-  if (msg.text && looksLikeCalendarEdit(msg.text)) {
-    const messageTime = msg.date ? new Date(msg.date * 1000) : new Date()
+  if (looksLikeCalendarEdit(text)) {
     let intent: CalendarEditIntent = { isEditIntent: false }
     try {
-      intent = await detectCalendarEditIntent(msg.text, messageTime)
+      intent = await detectCalendarEditIntent(text, messageTime)
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e)
       await sendMessage(msg.chat.id, `Kunne ikke forstå kalender-rettelsen lige nu: ${error}`)
@@ -1473,12 +1572,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
     if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
   }
 
-  // Aktivitets-start har forrang over almindelig capture. Pre-filtrér med
-  // regex så vi kun kalder Haiku når en trigger-frase faktisk er der.
-  if (msg.text && looksLikeActivityStart(msg.text)) {
+  // Aktivitets-start har forrang over almindelig capture.
+  if (looksLikeActivityStart(text)) {
     let intent: ActivityIntent = { isActivityStart: false, activityName: null }
     try {
-      intent = await detectActivityStart(msg.text)
+      intent = await detectActivityStart(text)
     } catch (e) {
       console.error('activity intent detection fejlede (falder tilbage til capture):', e)
     }
@@ -1488,18 +1586,59 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
   }
 
   // Aktivitets-stop: lukker den aktive aktivitet uden at starte en ny. Tjekkes
-  // EFTER start (en "starter på"-besked rammer aldrig stop-prefilteret) og bruger
-  // samme prefilter-så-Haiku-mønster. Bemærk: bare "stop" er et veto-ord og er
-  // allerede fanget højere oppe.
-  if (msg.text && looksLikeActivityStop(msg.text)) {
+  // EFTER start (en "starter på"-besked rammer aldrig stop-prefilteret). Bemærk:
+  // bare "stop" er et veto-ord og er allerede fanget højere oppe.
+  if (looksLikeActivityStop(text)) {
     let isStop = false
     try {
-      isStop = await detectActivityStop(msg.text)
+      isStop = await detectActivityStop(text)
     } catch (e) {
       console.error('activity stop detection fejlede (falder tilbage til capture):', e)
     }
     if (isStop) return handleActivityStop(msg)
   }
 
-  return handleCapture(msg)
+  // ---- Fallback: hverdagssprog uden faste trigger-ord ----
+  // Ingen regex-sti ramte (eller deres detector sagde nej). Spørg Haiku bredt
+  // hvad beskeden vil, og rut til den rette handler. Hver handling bekræftes
+  // STADIG af sin egen detector (dobbelt-gate mod falske positiver). Alt usikkert
+  // - inkl. triage-fejl - falder til capture, præcis som før.
+  let category: MessageCategory = 'note'
+  try {
+    category = await triageMessageIntent(text, messageTime)
+  } catch (e) {
+    console.error('intent-triage fejlede (falder tilbage til capture):', e)
+  }
+
+  if (category === 'activity_start') {
+    let intent: ActivityIntent = { isActivityStart: false, activityName: null }
+    try {
+      intent = await detectActivityStart(text)
+    } catch (e) {
+      console.error('activity start (fallback) fejlede:', e)
+    }
+    if (intent.isActivityStart && intent.activityName) {
+      return handleActivityStart(msg, intent.activityName)
+    }
+  } else if (category === 'activity_stop') {
+    let isStop = false
+    try {
+      isStop = await detectActivityStop(text)
+    } catch (e) {
+      console.error('activity stop (fallback) fejlede:', e)
+    }
+    if (isStop) return handleActivityStop(msg)
+  } else if (category === 'calendar_edit') {
+    let intent: CalendarEditIntent = { isEditIntent: false }
+    try {
+      intent = await detectCalendarEditIntent(text, messageTime)
+    } catch (e) {
+      console.error('calendar edit (fallback) fejlede:', e)
+    }
+    if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
+  } else if (category === 'calendar_delete') {
+    return handleCapture(msg, text, source, { forceDelete: true })
+  }
+
+  return handleCapture(msg, text, source)
 }
