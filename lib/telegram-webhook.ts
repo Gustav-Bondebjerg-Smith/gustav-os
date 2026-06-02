@@ -497,6 +497,11 @@ async function detectCalendarEditIntent(
     '- "start": brug når brugeren retter starttiden, men sluttiden bevares. Eksempler: "jeg startede AI arbejde først 18:20", "ret starttid på X til 09:30".',
     '- "shift": brug når hele eventet flyttes, og varigheden skal bevares. Eksempler: "flyt træning til 14:30", "skubbede læsning til 11:00", "ændre møde til 10:00" hvis der ikke står start/slut.',
     '',
+    'Søvn/sengetid (Gustav har en fast daglig søvn-begivenhed, typisk om natten):',
+    '- "går i seng kl X", "sover først kl X", "i seng ved/kl X" -> editType "start", eventHint "søvn".',
+    '- "står op kl X", "vågner kl X", "sover til kl X" -> editType "end", eventHint "søvn".',
+    '- Gælder kun med et konkret klokkeslæt. Uden tid (fx "jeg sover dårligt") -> false.',
+    '',
     'eventHint er kun navnet på eventet, uden ord som ret/ændre/flyt/startede/først/sluttede/gik/går til/skubbede/til/klokken og uden tidspunkt.',
     'newTime skal være 24-timers HH:MM, fx "09:05" eller "18:20".',
     `Hvis brugeren skriver "nu", skal newTime være den aktuelle HH:MM ovenfor: "${fmtTimeColonCph(now)}".`,
@@ -558,9 +563,14 @@ async function detectCalendarEditIntent(
   }
 }
 
-async function loadTodaysEditableEvents(): Promise<EditableCalendarEvent[]> {
+// Henter events der kan redigeres: fra lidt før dagens start (CPH) til ind i
+// MORGEN formiddag. Det ekstra halve døgn fanger en søvn-/natbegivenhed der
+// starter efter midnat ("i nat går jeg i seng kl 2") - dens dato er teknisk i
+// morgen, så det gamle "kun i dag"-vindue missede den. matchCalendarEditEvent
+// vælger så den rette instans ud fra beskedens "i nat"/"i dag"-spor.
+async function loadEditableEvents(): Promise<EditableCalendarEvent[]> {
   const from = new Date(startOfTodayCph().getTime() - 2 * 3600000)
-  const to = endOfTodayCph()
+  const to = new Date(endOfTodayCph().getTime() + 12 * 3600000)
   const events = await getEvents(from, to)
   return events.filter(
     (e): e is EditableCalendarEvent => !!e.id && !!e.start?.dateTime && !!e.end?.dateTime
@@ -569,7 +579,8 @@ async function loadTodaysEditableEvents(): Promise<EditableCalendarEvent[]> {
 
 async function matchCalendarEditEvent(
   eventHint: string,
-  candidates: EditableCalendarEvent[]
+  candidates: EditableCalendarEvent[],
+  message: string
 ): Promise<EditableCalendarEvent | null> {
   if (!eventHint || candidates.length === 0) return null
 
@@ -582,10 +593,10 @@ async function matchCalendarEditEvent(
   }))
 
   const system = [
-    'Du matcher et kort dansk eventHint til præcis én kalenderbegivenhed fra i dag.',
+    'Du matcher en kort dansk besked + eventHint til præcis én kalenderbegivenhed fra et vindue omkring nu (i dag plus i nat/i morgen tidlig).',
     `Lige nu i København: ${nowInCopenhagen()}.`,
     '',
-    'Du får en JSON-liste af events. Vælg det ene event der bedst matcher hintet.',
+    'Du får Gustavs oprindelige "besked", et "eventHint" og en JSON-liste af events (hver med start/end-dato). Vælg det ene event beskeden handler om.',
     'Vær generøs med små titel-forskelle og bøjninger, men returner null hvis intet event har en reel relation.',
     '',
     'Svar KUN med JSON:',
@@ -593,12 +604,12 @@ async function matchCalendarEditEvent(
     '{"event_id": null, "reason": "kort dansk forklaring"} ellers',
     '',
     'Matching-regler:',
-    '- Titel-overlap er vigtigst: "uni", "unilæsning" og "læsning" kan matche samme event.',
-    '- Hvis flere events matcher, vælg det event hvor titlen passer bedst. Brug tid kun som tie-breaker.',
+    '- Titel-overlap er vigtigst: "uni", "unilæsning" og "læsning" kan matche samme event; "seng"/"sove" matcher "søvn".',
+    '- Hvis FLERE events har samme/lignende titel (en tilbagevendende begivenhed som søvn findes både i dag og i nat/i morgen), vælg den rette INSTANS ud fra beskeden: brug "i nat"/"i dag"/"i morgen", det nævnte klokkeslæt og tidspunktet nu. Fremadrettet hensigt ("går i seng kl 2 i nat") -> den førstkommende instans fra nu. Korrektion af noget der lige er sket -> den seneste forbi-instans.',
     '- Ignorer fyldord som "aftale", "event", "møde", "arbejde" hvis resten af hintet matcher bedre.',
   ].join('\n')
 
-  const userPayload = JSON.stringify({ eventHint, events: list })
+  const userPayload = JSON.stringify({ besked: message, eventHint, events: list })
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -661,7 +672,14 @@ function computeCalendarEdit(
   }
 
   if (intent.editType === 'start') {
-    const start = cphDateTimeOnDay(cphYmd(event.start.dateTime), newTime)
+    const startDay = cphYmd(event.start.dateTime)
+    let start = cphDateTimeOnDay(startDay, newTime)
+    // Lander den nye starttid efter sluttid, ligger sengetiden før midnat (fx
+    // "i seng kl 23" på en søvn-begivenhed der ellers starter 01:00 dagen efter).
+    // Prøv da dagen FØR, så blokken stadig er sammenhængende.
+    if (start.getTime() >= currentEnd.getTime()) {
+      start = cphDateTimeOnDay(addDaysToYmd(startDay, -1), newTime)
+    }
     if (start.getTime() >= currentEnd.getTime()) {
       throw new Error('Den nye starttid skal være før sluttid.')
     }
@@ -715,14 +733,15 @@ function formatCalendarEditConfirmation(
 
 async function handleCalendarEdit(
   msg: TelegramMessage,
-  intent: Extract<CalendarEditIntent, { isEditIntent: true }>
+  intent: Extract<CalendarEditIntent, { isEditIntent: true }>,
+  text: string
 ): Promise<HandleResult> {
   const chatId = msg.chat.id
   await sendChatAction(chatId)
 
   let candidates: EditableCalendarEvent[] = []
   try {
-    candidates = await loadTodaysEditableEvents()
+    candidates = await loadEditableEvents()
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
     await sendMessage(chatId, `Kunne ikke hente kalenderen lige nu: ${error}`)
@@ -731,7 +750,7 @@ async function handleCalendarEdit(
 
   let event: EditableCalendarEvent | null = null
   try {
-    event = await matchCalendarEditEvent(intent.eventHint, candidates)
+    event = await matchCalendarEditEvent(intent.eventHint, candidates, text)
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
     await sendMessage(chatId, `Kunne ikke matche kalender-event lige nu: ${error}`)
@@ -1210,7 +1229,7 @@ async function triageMessageIntent(
     'Mulige værdier:',
     '- "activity_start": Gustav begynder en aktivitet LIGE NU og vil tidstage den. Fx "nu kaster jeg mig over anatomien", "så er det bøgerne", "i gang med frokost", "tid til en løbetur".',
     '- "activity_stop": Gustav holder op med eller pauser sin nuværende aktivitet LIGE NU uden at starte en ny. Fx "så er jeg færdig", "holder lige en pause", "det var det for i dag".',
-    '- "calendar_edit": Gustav vil RETTE tiden på en aftale der ALLEREDE findes i dag. Fx "træningen rykkede til tre", "mødet trak ud til halv fem", "lad os sige uni gik til nu".',
+    '- "calendar_edit": Gustav vil RETTE tiden på en aftale der ALLEREDE findes i dag (inkl. hans faste daglige søvn-begivenhed). Fx "træningen rykkede til tre", "mødet trak ud til halv fem", "lad os sige uni gik til nu", "tror jeg først går i seng kl 2 i nat" (= ret søvnens starttid), "jeg står op kl 7" (= ret søvnens sluttid).',
     '- "calendar_delete": Gustav vil FJERNE eller aflyse en aftale der allerede findes. Fx "den frokost ryger ud", "jeg dropper tandlægen i morgen".',
     '- "recall": Gustav SPØRGER assistenten om noget den kan slå op i hans egne tidligere noter, captures eller planer - typisk hvad han skulle huske, lave eller havde planlagt. Fx "hvad skulle jeg nå i dag", "hvad havde jeg af opgaver", "hvad sagde jeg om eksamen i går", "hvornår skulle jeg ringe til mor".',
     '- "note": ALT andet. En tanke, ide, observation, et retorisk/reflekterende spørgsmål, noget vagt eller fremtidigt, en besked der GIVER assistenten info ("husk at ..."), ELLER en NY aftale der skal oprettes. Dette er standardvalget.',
@@ -1584,7 +1603,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
       await sendMessage(msg.chat.id, `Kunne ikke forstå kalender-rettelsen lige nu: ${error}`)
       return { status: 'processed', reason: 'calendar_edit_intent_failed' }
     }
-    if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
+    if (intent.isEditIntent) return handleCalendarEdit(msg, intent, text)
   }
 
   // Aktivitets-start har forrang over almindelig capture.
@@ -1650,7 +1669,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
     } catch (e) {
       console.error('calendar edit (fallback) fejlede:', e)
     }
-    if (intent.isEditIntent) return handleCalendarEdit(msg, intent)
+    if (intent.isEditIntent) return handleCalendarEdit(msg, intent, text)
   } else if (category === 'recall') {
     // Read-only opslag i second brain. Voice + tekst rammer her, så
     // hverdagssprogs-spørgsmål ("hvad skulle jeg nå i dag") virker uden /ask.
