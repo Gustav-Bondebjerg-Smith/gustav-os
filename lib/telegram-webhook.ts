@@ -112,6 +112,42 @@ function hasDeleteIntent(text: string | null | undefined): boolean {
   return DELETE_INTENT.test(text)
 }
 
+// Robust udtræk af det FØRSTE komplette JSON-objekt fra et LLM-svar. Haiku
+// pakker svaret i ```json-fences OG tilføjer nogle gange forklarende prosa EFTER
+// objektet ("Begrundelse: ..."). Den gamle strip (replace(/```$/)) fjernede kun
+// en fence i selve enden, så trailing prosa fik JSON.parse til at kaste -> kaldet
+// faldt stille til fallback (fx "kan ikke finde event"). Her scanner vi
+// balancerede tuborg-klammer (respekterer strenge) og parser kun objektet.
+function extractJsonObject<T = Record<string, unknown>>(raw: string | null | undefined): T | null {
+  if (!raw) return null
+  const text = raw.replace(/```(?:json)?/gi, '')
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+    } else if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1)) as T
+        } catch {
+          return null
+        }
+      }
+    }
+  }
+  return null
+}
+
 type HandleResult = {
   status: 'processed' | 'ignored'
   reason?: string
@@ -307,21 +343,15 @@ async function proposeCalendarEvent(captureContent: string): Promise<CalendarPro
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: {
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{
     propose?: boolean
     summary?: string
     start?: string
     end?: string
     location?: string
-  }
-
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return null
-  }
+  }>(raw)
+  if (!parsed) return null
 
   if (!parsed.propose || !parsed.summary || !parsed.start || !parsed.end) return null
   return {
@@ -439,9 +469,10 @@ async function proposeCalendarDelete(captureContent: string): Promise<DeleteAtte
     })
     if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
     const j = await r.json()
-    const raw = (j.content?.[0]?.text || '').trim()
-    const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-    parsed = JSON.parse(cleaned)
+    const raw = j.content?.[0]?.text || ''
+    const extracted = extractJsonObject<{ idx?: number | null; reason?: string }>(raw)
+    if (!extracted) throw new Error('uparsbar Haiku-respons')
+    parsed = extracted
   } catch (e) {
     console.error('Haiku-kald til delete-match fejlede:', e)
     return { match: null, candidates: candidateSummaries, reason: 'Haiku-fejl' }
@@ -527,19 +558,14 @@ async function detectCalendarEditIntent(
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: {
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{
     isEditIntent?: boolean
     eventHint?: string
     editType?: string
     newTime?: string
-  }
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return { isEditIntent: false }
-  }
+  }>(raw)
+  if (!parsed) return { isEditIntent: false }
 
   const editTypes: CalendarEditType[] = ['end', 'start', 'shift']
   const editType = parsed.editType
@@ -580,7 +606,8 @@ async function loadEditableEvents(): Promise<EditableCalendarEvent[]> {
 async function matchCalendarEditEvent(
   eventHint: string,
   candidates: EditableCalendarEvent[],
-  message: string
+  message: string,
+  now: Date
 ): Promise<EditableCalendarEvent | null> {
   if (!eventHint || candidates.length === 0) return null
 
@@ -604,8 +631,9 @@ async function matchCalendarEditEvent(
     '{"event_id": null, "reason": "kort dansk forklaring"} ellers',
     '',
     'Matching-regler:',
-    '- Titel-overlap er vigtigst: "uni", "unilæsning" og "læsning" kan matche samme event; "seng"/"sove" matcher "søvn".',
-    '- Hvis FLERE events har samme/lignende titel (en tilbagevendende begivenhed som søvn findes både i dag og i nat/i morgen), vælg den rette INSTANS ud fra beskeden: brug "i nat"/"i dag"/"i morgen", det nævnte klokkeslæt og tidspunktet nu. Fremadrettet hensigt ("går i seng kl 2 i nat") -> den førstkommende instans fra nu. Korrektion af noget der lige er sket -> den seneste forbi-instans.',
+    '- Titel-overlap er vigtigst: "uni", "unilæsning" og "læsning" kan matche samme event; "seng"/"sove"/"sengetid" matcher "søvn".',
+    '- Find kun den rette TITEL/begivenhed. Optræder en tilbagevendende begivenhed (fx søvn) flere dage i listen, så vælg bare ÉN af dem med den rette titel - systemet vælger selv den rette dag/instans bagefter ud fra beskedens tidspunkt.',
+    '- Klokkeslættet i beskeden (fx "kl 2") er den nye tid, ikke et match-kriterie. Lad det ikke afgøre valget.',
     '- Ignorer fyldord som "aftale", "event", "møde", "arbejde" hvis resten af hintet matcher bedre.',
   ].join('\n')
 
@@ -628,17 +656,30 @@ async function matchCalendarEditEvent(
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: { event_id?: string | null }
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return null
-  }
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{ event_id?: string | null }>(raw)
+  if (!parsed || !parsed.event_id) return null
+  const haikuMatch = candidates.find((event) => event.id === parsed.event_id)
+  if (!haikuMatch) return null
 
-  if (!parsed.event_id) return null
-  return candidates.find((event) => event.id === parsed.event_id) || null
+  // Haiku matcher TITLEN pålideligt, men er upålidelig til at vælge den rette
+  // INSTANS af en tilbagevendende begivenhed (valgte fx en søvn-instans der
+  // allerede var afsluttet i morges i stedet for nattens). Vælg derfor instansen
+  // DETERMINISTISK i kode: blandt kandidater med samme titel, tag den hvis start
+  // er tættest på beskedens tidspunkt. Det rammer nattens søvn (få timer fremme)
+  // frem for morgenens (mange timer tilbage), og dagens instans frem for morgendagens.
+  const title = (haikuMatch.summary || '').trim().toLowerCase()
+  const sameTitle = candidates.filter((e) => (e.summary || '').trim().toLowerCase() === title)
+  if (sameTitle.length <= 1) return haikuMatch
+  const nowMs = now.getTime()
+  return sameTitle.reduce(
+    (best, e) =>
+      Math.abs(new Date(e.start.dateTime).getTime() - nowMs) <
+      Math.abs(new Date(best.start.dateTime).getTime() - nowMs)
+        ? e
+        : best,
+    sameTitle[0]
+  )
 }
 
 type CalendarEditComputation = {
@@ -737,6 +778,9 @@ async function handleCalendarEdit(
   text: string
 ): Promise<HandleResult> {
   const chatId = msg.chat.id
+  // Beskedens eget tidsstempel som "nu" -> deterministisk instans-valg og
+  // robust ved gen-behandling (samme som activity-handlerne).
+  const now = msg.date ? new Date(msg.date * 1000) : new Date()
   await sendChatAction(chatId)
 
   let candidates: EditableCalendarEvent[] = []
@@ -750,7 +794,7 @@ async function handleCalendarEdit(
 
   let event: EditableCalendarEvent | null = null
   try {
-    event = await matchCalendarEditEvent(intent.eventHint, candidates, text)
+    event = await matchCalendarEditEvent(intent.eventHint, candidates, text, now)
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
     await sendMessage(chatId, `Kunne ikke matche kalender-event lige nu: ${error}`)
@@ -1134,14 +1178,9 @@ async function detectActivityStart(text: string): Promise<ActivityIntent> {
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: { isActivityStart?: boolean; activityName?: string | null }
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return { isActivityStart: false, activityName: null }
-  }
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{ isActivityStart?: boolean; activityName?: string | null }>(raw)
+  if (!parsed) return { isActivityStart: false, activityName: null }
   if (!parsed.isActivityStart || !parsed.activityName) {
     return { isActivityStart: false, activityName: null }
   }
@@ -1190,14 +1229,9 @@ async function detectActivityStop(text: string): Promise<boolean> {
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: { isActivityStop?: boolean }
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return false
-  }
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{ isActivityStop?: boolean }>(raw)
+  if (!parsed) return false
   return parsed.isActivityStop === true
 }
 
@@ -1259,14 +1293,9 @@ async function triageMessageIntent(
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
 
   const j = await r.json()
-  const raw = (j.content?.[0]?.text || '').trim()
-  const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-  let parsed: { category?: string }
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    return 'note'
-  }
+  const raw = j.content?.[0]?.text || ''
+  const parsed = extractJsonObject<{ category?: string }>(raw)
+  if (!parsed) return 'note'
 
   const valid: MessageCategory[] = [
     'activity_start',
