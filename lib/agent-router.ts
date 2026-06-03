@@ -123,12 +123,48 @@ export const TOOLS: AnthropicTool[] = [
       required: ['content'],
     },
   },
+  {
+    name: 'save_memory',
+    description:
+      'Gem et VARIGT faktum, en præference eller en korrektion om Gustav (eller et projekt), så assistenten husker det fremover og ændrer adfærd. Brug når Gustav RETTER dig eller fortæller noget der skal gælde varigt: "jeg træner om aftenen, ikke om morgenen", "kald mig Gustav", "foreslå ikke X mere". IKKE for noter, reminders, tanker eller engangsting (det er save_note).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['user', 'feedback', 'project', 'reference'],
+          description:
+            'user=fakta/præference om Gustav, feedback=en korrektion/instruks til assistenten, project=projekt-viden, reference=peger på en ekstern kilde',
+        },
+        key: {
+          type: 'string',
+          description:
+            'Kort kebab-case nøgle der identificerer faktummet, fx "traening-tidspunkt". Samme key overskriver et tidligere faktum.',
+        },
+        content: {
+          type: 'string',
+          description: 'Selve faktummet, kort og konkret, formuleret så det kan stå alene.',
+        },
+        why: {
+          type: 'string',
+          description: 'Kort begrundelse når det er en korrektion/feedback (hvorfor reglen gælder). Valgfri.',
+        },
+      },
+      required: ['type', 'key', 'content'],
+    },
+  },
 ]
 
-function buildSystem(now: Date): string {
+// System-prompten er delt i to: en STABIL del (identitet + lærte fakta + regler)
+// og en VOLATIL del (kun tidspunktet). Den stabile del sendes som et cache-stabilt
+// prefiks (cache_control i routeMessage), så Anthropic-prompt-cachen rammer på tværs
+// af beskeder. Fakta-blokken skifter kun når Gustav lærer routeren noget nyt, så
+// den buster først cachen ved en faktisk korrektion - ikke ved hver besked.
+function buildStableSystem(globalFacts: string): string {
+  const facts = globalFacts.trim()
   return [
     'Du er routeren i Gustavs personlige assistent. Gustav er medicinstuderende (SDU), sygeplejevikar og forskningsassistent.',
-    `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}.`,
+    ...(facts ? ['', facts] : []),
     '',
     'Du får én kort dansk besked (skrevet eller transskriberet fra tale). Afgør hvad Gustav vil, og kald PRÆCIS ét værktøj.',
     'Tal ikke i nøgleord - forstå intentionen i hverdagssprog. "nu kaster jeg mig over anatomien" = start_activity. "den frokost ryger ud" = delete_event.',
@@ -138,6 +174,7 @@ function buildSystem(now: Date): string {
     '- start_activity/stop_activity KUN når handlingen sker NU (ikke "startede i morges", ikke "starter kl 15").',
     '- create_event er en NY aftale. edit_event/delete_event ændrer/fjerner noget der allerede findes.',
     '- save_note er for ægte noter/reminders/tanker - ikke en default-skraldespand for ting du ikke gad forstå.',
+    '- save_memory gemmer et VARIGT faktum/præference/korrektion om Gustav eller et projekt, så assistenten husker det fremover. Brug det når Gustav retter dig eller fortæller noget der bør ændre fremtidig adfærd ("jeg træner om aftenen, ikke morgen", "kald mig Gustav"). IKKE for noter, reminders eller engangsting (det er save_note).',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
     '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
@@ -145,6 +182,11 @@ function buildSystem(now: Date): string {
     '- Indeholder samtalen ovenfor et spørgsmål du selv har stillet, er Gustavs nye besked svaret på det. Brug HELE samtalen til at udføre den oprindelige handling - spørg ikke igen om noget der allerede er oplyst.',
     '- Skriv aldrig tankestreger (lange — eller korte –) i dine spørgsmål eller svar. Brug punktum eller almindelig bindestreg.',
   ].join('\n')
+}
+
+// Kun tidspunktet. Skilt ud i sin egen blok så det ikke buster cachen på resten.
+function buildVolatileSystem(now: Date): string {
+  return `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}.`
 }
 
 export type RouterResult =
@@ -166,9 +208,21 @@ type AnthropicContentBlock =
 // (statsløst) eller hele samtalen inkl. routerens tidligere spørgsmål (flertur).
 export async function routeMessage(
   input: string | RouterTurn[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  globalFacts: string = ''
 ): Promise<RouterResult> {
   const messages = typeof input === 'string' ? [{ role: 'user' as const, content: input }] : input
+  // System sendes som to blokke: et stabilt prefiks (identitet + lærte fakta +
+  // regler) med cache_control, og en volatil hale med tidspunktet. Cache-brudet
+  // sidder på det stabile prefiks, så tools + den del genbruges fra prompt-cachen.
+  const system = [
+    {
+      type: 'text' as const,
+      text: buildStableSystem(globalFacts),
+      cache_control: { type: 'ephemeral' as const },
+    },
+    { type: 'text' as const, text: buildVolatileSystem(now) },
+  ]
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -180,7 +234,7 @@ export async function routeMessage(
       model: ROUTER_MODEL,
       max_tokens: 400,
       temperature: 0,
-      system: buildSystem(now),
+      system,
       tools: TOOLS,
       messages,
     }),

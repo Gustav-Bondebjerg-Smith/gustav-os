@@ -14,6 +14,12 @@ import {
   updateSource,
   upsertSource,
 } from './memory-core.mjs'
+import {
+  listFacts,
+  recallGlobal,
+  recallProject,
+  saveMemory,
+} from './memory-facts-core.mjs'
 
 const ACCESS = (process.env.MEMORY_MCP_ACCESS || 'read_only').trim().toLowerCase()
 const IS_FULL = ACCESS === 'full'
@@ -110,6 +116,50 @@ registerTool(
     exportBackup({ backup_root, include_deleted, actor: ACTOR })
 )
 
+// ---- Lærende fakta-lag (memory_facts) ----
+// Lille, kurateret lag adskilt fra dokument-RAG'en ovenfor. Telegram-routeren
+// skriver scope 'global'; her kan Claude Code/Codex læse de samme fakta og skrive
+// projekt-scopede fakta (scope = projekt-slug).
+
+registerTool(
+  server,
+  'memory_fact_recall_global',
+  {
+    title: 'Recall global facts',
+    description: 'Load the full set of global learned facts/preferences about Gustav (no vector search). Small, stable identity layer - prefer this for who-Gustav-is context before relying on AGENTS/STATUS.',
+    inputSchema: {},
+  },
+  () => recallGlobal()
+)
+
+registerTool(
+  server,
+  'memory_fact_recall_project',
+  {
+    title: 'Recall project facts',
+    description: 'Semantic search of learned facts within ONE project scope (slug). Use for project-specific conventions/decisions the assistant has saved.',
+    inputSchema: {
+      query: z.string().min(1),
+      scope: z.string().min(1),
+      match_count: z.number().int().min(1).max(20).optional(),
+    },
+  },
+  ({ query, scope, match_count = 8 }) => recallProject({ query, scope, match_count })
+)
+
+registerTool(
+  server,
+  'memory_fact_list',
+  {
+    title: 'List learned facts',
+    description: 'List learned facts, optionally filtered by scope. No vector search.',
+    inputSchema: {
+      scope: z.string().optional(),
+    },
+  },
+  ({ scope = null }) => listFacts({ scope })
+)
+
 if (IS_FULL) {
   registerTool(
     server,
@@ -180,6 +230,24 @@ if (IS_FULL) {
       },
     },
     (args) => reindexSource({ ...args, actor: ACTOR, tool_name: 'memory_reindex_source' })
+  )
+
+  registerTool(
+    server,
+    'memory_fact_save',
+    {
+      title: 'Save or correct a fact',
+      description: 'Write or correct a learned fact/preference. Upserts on (scope, key) - same key overwrites, never duplicates. Use scope "global" for facts about Gustav, or a project slug for project knowledge. type: user|feedback|project|reference.',
+      inputSchema: {
+        type: z.enum(['user', 'feedback', 'project', 'reference']),
+        key: z.string().min(1),
+        content: z.string().min(1),
+        scope: z.string().optional(),
+        why: z.string().optional(),
+      },
+    },
+    ({ type, key, content, scope = 'global', why = null }) =>
+      saveMemory({ type, key, content, scope, why })
   )
 }
 

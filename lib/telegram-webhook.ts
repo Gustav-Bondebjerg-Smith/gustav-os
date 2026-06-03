@@ -9,6 +9,7 @@ import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
+import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
@@ -1679,9 +1680,14 @@ async function dispatchViaAgent(
   const prior = await loadClarification(msg.chat.id)
   const convo: RouterTurn[] = [...(prior || []), { role: 'user', content: text }]
 
+  // Lærte globale fakta lægges cache-stabilt ind i routerens system-prompt, så
+  // korrektioner Gustav har gemt ændrer adfærd uden kode-edit. recallGlobal fejler
+  // blødt til [], så en manglende tabel bare giver tom streng = routeren som før.
+  const globalFacts = formatGlobalForPrompt(await recallGlobal())
+
   let routed: RouterResult
   try {
-    routed = await routeMessage(convo, now)
+    routed = await routeMessage(convo, now, globalFacts)
   } catch (e) {
     console.error('agent-router fejlede (falder tilbage til capture):', e)
     await clearClarification(msg.chat.id)
@@ -1738,6 +1744,33 @@ async function dispatchViaAgent(
     }
     case 'save_note':
       return handleCapture(msg, text, source)
+    case 'save_memory': {
+      // Varigt faktum/præference. Let validering, skriv via memory-facts-laget,
+      // bekræft kort. Ugyldig input eller fejlet skrivning (fx migration ikke
+      // kørt) -> fald tilbage til capture, så informationen aldrig går tabt.
+      const memTypes: MemoryType[] = ['user', 'feedback', 'project', 'reference']
+      const memType = typeof input.type === 'string' ? input.type : ''
+      const memKey = typeof input.key === 'string' ? input.key.trim() : ''
+      const memContent = typeof input.content === 'string' ? input.content.trim() : ''
+      const memWhy = typeof input.why === 'string' ? input.why.trim() : ''
+      if (!memTypes.includes(memType as MemoryType) || !memKey || !memContent) {
+        return handleCapture(msg, text, source)
+      }
+      try {
+        const saved = await saveMemory({
+          type: memType as MemoryType,
+          scope: 'global',
+          key: memKey,
+          content: memContent,
+          why: memWhy || undefined,
+        })
+        await sendMessage(msg.chat.id, `🧠 Husket: ${saved.content}`)
+        return { status: 'processed', reason: 'agent_saved_memory' }
+      } catch (e) {
+        console.error('save_memory fejlede (gemmer som note i stedet):', e)
+        return handleCapture(msg, text, source)
+      }
+    }
     default:
       console.warn('agent-router: ukendt værktøj', routed.tool)
       return handleCapture(msg, text, source)

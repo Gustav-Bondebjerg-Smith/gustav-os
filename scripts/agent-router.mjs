@@ -99,12 +99,30 @@ export const TOOLS = [
       required: ['content'],
     },
   },
+  {
+    name: 'save_memory',
+    description: 'Gem et VARIGT faktum/præference/korrektion om Gustav (eller et projekt), så assistenten husker det fremover og ændrer adfærd. Brug når Gustav RETTER dig eller fortæller noget der skal gælde varigt: "jeg træner om aftenen, ikke om morgenen", "kald mig Gustav", "foreslå ikke X mere". IKKE for noter, reminders eller engangsting (det er save_note).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['user', 'feedback', 'project', 'reference'], description: 'user=fakta/præference om Gustav, feedback=korrektion/instruks, project=projekt-viden, reference=ekstern kilde' },
+        key: { type: 'string', description: 'Kort kebab-case nøgle, fx "traening-tidspunkt". Samme key overskriver et tidligere faktum.' },
+        content: { type: 'string', description: 'Selve faktummet, kort og konkret, så det kan stå alene.' },
+        why: { type: 'string', description: 'Kort begrundelse ved korrektion/feedback. Valgfri.' },
+      },
+      required: ['type', 'key', 'content'],
+    },
+  },
 ]
 
-function buildSystem(now) {
+// Spejler lib/agent-router.ts: stabil del (identitet + lærte fakta + regler) +
+// volatil del (kun tidspunktet). Splittet så lib kan cache det stabile prefiks;
+// her holder vi samme tekst/struktur så replay tester præcis prod-routeren.
+function buildStableSystem(globalFacts = '') {
+  const facts = String(globalFacts || '').trim()
   return [
     'Du er routeren i Gustavs personlige assistent. Gustav er medicinstuderende (SDU), sygeplejevikar og forskningsassistent.',
-    `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}.`,
+    ...(facts ? ['', facts] : []),
     '',
     'Du får én kort dansk besked (skrevet eller transskriberet fra tale). Afgør hvad Gustav vil, og kald PRÆCIS ét værktøj.',
     'Tal ikke i nøgleord - forstå intentionen i hverdagssprog. "nu kaster jeg mig over anatomien" = start_activity. "den frokost ryger ud" = delete_event.',
@@ -114,6 +132,7 @@ function buildSystem(now) {
     '- start_activity/stop_activity KUN når handlingen sker NU (ikke "startede i morges", ikke "starter kl 15").',
     '- create_event er en NY aftale. edit_event/delete_event ændrer/fjerner noget der allerede findes.',
     '- save_note er for ægte noter/reminders/tanker - ikke en default-skraldespand for ting du ikke gad forstå.',
+    '- save_memory gemmer et VARIGT faktum/præference/korrektion om Gustav eller et projekt, så assistenten husker det fremover. Brug det når Gustav retter dig eller fortæller noget der bør ændre fremtidig adfærd ("jeg træner om aftenen, ikke morgen", "kald mig Gustav"). IKKE for noter, reminders eller engangsting (det er save_note).',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
     '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
@@ -123,12 +142,20 @@ function buildSystem(now) {
   ].join('\n')
 }
 
+function buildVolatileSystem(now) {
+  return `Lige nu i København (Europe/Copenhagen): ${nowInCopenhagen(now)}.`
+}
+
 // Returnerer { kind, tool, input, askText, raw }.
 //   kind: 'tool'  -> modellen valgte et værktøj (tool/input udfyldt)
 //   kind: 'ask'   -> modellen var i tvivl og stiller et spørgsmål (askText udfyldt)
 //   kind: 'none'  -> intet brugbart svar
-export async function routeMessage(input, now = new Date()) {
+export async function routeMessage(input, now = new Date(), globalFacts = '') {
   const messages = typeof input === 'string' ? [{ role: 'user', content: input }] : input
+  const system = [
+    { type: 'text', text: buildStableSystem(globalFacts), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: buildVolatileSystem(now) },
+  ]
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -140,7 +167,7 @@ export async function routeMessage(input, now = new Date()) {
       model: ROUTER_MODEL,
       max_tokens: 400,
       temperature: 0,
-      system: buildSystem(now),
+      system,
       tools: TOOLS,
       messages,
     }),
