@@ -84,7 +84,7 @@ Migration `supabase/migrations/0008_memory_sources.sql` udvider memory til canon
 - Eksportér lokal backup: `npm run memory:export`
 - Start MCP server manuelt: `MEMORY_MCP_ACCESS=full npm run memory:mcp`
 
-Repo-runtime ligger i `/Users/gustavbondebjergsmith/Developer/gustav-os`, så MCP-serveren starter uden for den iCloud-synkede `Documents`-mappe. `npm run memory:import` scanner både `/Users/gustavbondebjergsmith/Documents/AI assistent` og repo-runtime, hvor repo-filer gemmes med `gustav-os/...` source-keys. Codex projektkonfig ligger i `.codex/config.toml`; Claude Code projektkonfig ligger i `.mcp.json`. Global Codex og global Claude Code har full-access memory via user config. Backup skrives til `/Users/gustavbondebjergsmith/Documents/AI assistent/supabase-memory-backup/` og er ikke canonical source.
+Repo-runtime ligger i `/Users/gustavbondebjergsmith/Developer/gustav-os`, så MCP-serveren starter uden for den iCloud-synkede `Documents`-mappe. `npm run memory:import` scanner både `/Users/gustavbondebjergsmith/Developer/AI assistent` og repo-runtime, hvor repo-filer gemmes med `gustav-os/...` source-keys. Codex projektkonfig ligger i `.codex/config.toml`; Claude Code projektkonfig ligger i `.mcp.json`. Global Codex og global Claude Code har full-access memory via user config. Backup skrives til `/Users/gustavbondebjergsmith/Developer/AI assistent/supabase-memory-backup/` og er ikke canonical source.
 
 ## Telegram webhook
 

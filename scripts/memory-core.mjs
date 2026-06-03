@@ -9,9 +9,9 @@ import { promisify } from 'node:util'
 import { createClient } from '@supabase/supabase-js'
 import { embedText } from './embed.mjs'
 
-export const WORKSPACE_ROOT = '/Users/gustavbondebjergsmith/Documents/AI assistent'
+export const WORKSPACE_ROOT = '/Users/gustavbondebjergsmith/Developer/AI assistent'
 export const PROJECT_ROOT = '/Users/gustavbondebjergsmith/Developer/gustav-os'
-export const BACKUP_ROOT = '/Users/gustavbondebjergsmith/Documents/AI assistent/supabase-memory-backup'
+export const BACKUP_ROOT = '/Users/gustavbondebjergsmith/Developer/AI assistent/supabase-memory-backup'
 
 const CHUNK_SIZE = 3600
 const CHUNK_OVERLAP = 450
