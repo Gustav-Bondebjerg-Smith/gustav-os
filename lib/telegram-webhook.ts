@@ -8,6 +8,7 @@ import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
+import { routeMessage, type RouterResult } from './agent-router'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
@@ -1562,6 +1563,116 @@ async function handleActivityStop(msg: TelegramMessage): Promise<HandleResult> {
   return { status: 'processed', reason: 'activity_stopped_no_calendar' }
 }
 
+// ---- Tool-calling router (bag USE_AGENT_ROUTER-flag) ----
+// Mapper routerens valgte værktøj til de EKSISTERENDE handlers, så veto- og
+// kalender-logikken genbruges uændret. Routeren erstatter detektions-laget
+// (regex + triage + double-gate), ikke eksekveringen.
+
+// create_event: routeren giver eksplicitte slots (summary/start/end), så vi går
+// uden om proposeCalendarEvent og bygger forslaget direkte. Samme action+veto-
+// flow som den normale aftale-gren i handleCapture.
+async function handleAgentCreate(
+  msg: TelegramMessage,
+  input: Record<string, unknown>
+): Promise<HandleResult> {
+  const summary = typeof input.summary === 'string' ? input.summary.trim() : ''
+  const start = typeof input.start === 'string' ? input.start.trim() : ''
+  const end = typeof input.end === 'string' ? input.end.trim() : ''
+  if (!summary || !start || !end) {
+    await sendMessage(
+      msg.chat.id,
+      'Jeg manglede titel eller tid til at oprette aftalen. Prøv igen med et klart tidspunkt.'
+    )
+    return { status: 'processed', reason: 'agent_create_missing_slots' }
+  }
+
+  const proposal: CalendarProposal = { summary, start, end }
+  const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
+  const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
+  try {
+    const sent = await sendMessage(msg.chat.id, formatProposal(proposal, vetoMinutes))
+    const sb = getSupabase()
+    const { error: actErr } = await sb.from('actions').insert({
+      type: 'calendar_insert',
+      payload: proposal,
+      source_capture_id: null,
+      telegram_message_id: sent.message_id,
+      veto_deadline: deadlineIso,
+    })
+    if (actErr) console.error('agent create: action kunne ikke gemmes:', actErr.message)
+  } catch (e) {
+    console.error('agent create: proposal-besked fejlede:', e)
+    await sendMessage(msg.chat.id, 'Kunne ikke sende kalender-forslaget lige nu.')
+  }
+  return { status: 'processed', reason: 'agent_create_proposed' }
+}
+
+async function dispatchViaAgent(
+  msg: TelegramMessage,
+  text: string,
+  source: 'telegram_text' | 'telegram_voice'
+): Promise<HandleResult> {
+  const now = msg.date ? new Date(msg.date * 1000) : new Date()
+  await sendChatAction(msg.chat.id)
+
+  let routed: RouterResult
+  try {
+    routed = await routeMessage(text, now)
+  } catch (e) {
+    console.error('agent-router fejlede (falder tilbage til capture):', e)
+    return handleCapture(msg, text, source)
+  }
+
+  // Tvivl -> afklarende spørgsmål, aldrig en tavs note (kerne-kravet fra council).
+  if (routed.kind === 'ask') {
+    await sendMessage(msg.chat.id, routed.askText)
+    return { status: 'processed', reason: 'agent_asked' }
+  }
+  if (routed.kind !== 'tool') {
+    return handleCapture(msg, text, source)
+  }
+
+  const input = routed.input
+  switch (routed.tool) {
+    case 'create_event':
+      return handleAgentCreate(msg, input)
+    case 'edit_event': {
+      const eventHint = typeof input.event_hint === 'string' ? input.event_hint.trim() : ''
+      const editTypeRaw = typeof input.edit_type === 'string' ? input.edit_type : ''
+      const editTypes: CalendarEditType[] = ['end', 'start', 'shift']
+      const newTime = typeof input.new_time === 'string' ? normalizeEditTime(input.new_time, now) : null
+      if (!eventHint || !newTime || !editTypes.includes(editTypeRaw as CalendarEditType)) {
+        return handleCapture(msg, text, source)
+      }
+      return handleCalendarEdit(
+        msg,
+        { isEditIntent: true, eventHint, editType: editTypeRaw as CalendarEditType, newTime },
+        text
+      )
+    }
+    case 'delete_event':
+      // Genbruger det eksisterende slet-forslag + veto-flow (re-udleder event fra teksten).
+      return handleCapture(msg, text, source, { forceDelete: true })
+    case 'start_activity': {
+      const name = typeof input.activity_name === 'string' ? input.activity_name.trim() : ''
+      if (!name) return handleCapture(msg, text, source)
+      return handleActivityStart(msg, name)
+    }
+    case 'stop_activity':
+      return handleActivityStop(msg)
+    case 'search_memory': {
+      const query =
+        typeof input.query === 'string' && input.query.trim() ? input.query.trim() : text
+      return answerQuestion(msg.chat.id, query, 'recall')
+    }
+    case 'save_note':
+      return handleCapture(msg, text, source)
+    default:
+      console.warn('agent-router: ukendt værktøj', routed.tool)
+      return handleCapture(msg, text, source)
+  }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<HandleResult> {
   const msg = update.message
   if (!msg) return { status: 'ignored', reason: 'no_message' }
@@ -1613,6 +1724,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<Hand
       )
       return { status: 'processed', reason: 'command_help' }
     }
+  }
+
+  // Tool-calling router bag flag. Når aktivt erstatter ét Sonnet-kald hele
+  // regex+triage-cascaden nedenfor og ruter til samme handlers (veto/kalender
+  // uændret). Rul tilbage ved at fjerne env-var USE_AGENT_ROUTER. Veto/ask/slash
+  // ovenfor er bevidst tjekket FØR, så de er ens i begge tilstande.
+  if (process.env.USE_AGENT_ROUTER === '1') {
+    return dispatchViaAgent(msg, text, source)
   }
 
   const messageTime = msg.date ? new Date(msg.date * 1000) : new Date()

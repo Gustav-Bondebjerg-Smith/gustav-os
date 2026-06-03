@@ -43,6 +43,10 @@ API.txt
 # supabase cli
 supabase/.temp/
 
+# golden-set (router-eval data, ikke kode)
+golden-set-labeling.csv
+golden-set-raw.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
