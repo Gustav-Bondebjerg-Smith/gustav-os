@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "gustav_memory": {
+      "command": "node",
+      "args": [
+        "/Users/gustavbondebjergsmith/Developer/gustav-os/scripts/memory-mcp-server.mjs"
+      ],
+      "cwd": "/Users/gustavbondebjergsmith/Developer/gustav-os",
+      "env": {
+        "MEMORY_MCP_ACCESS": "full",
+        "MEMORY_MCP_ACTOR": "claude-project"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+[mcp_servers.gustav_memory]
+command = "node"
+args = ["/Users/gustavbondebjergsmith/Developer/gustav-os/scripts/memory-mcp-server.mjs"]
+cwd = "/Users/gustavbondebjergsmith/Developer/gustav-os"
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+enabled = true
+
+[mcp_servers.gustav_memory.env]
+MEMORY_MCP_ACCESS = "full"
+MEMORY_MCP_ACTOR = "codex-project"

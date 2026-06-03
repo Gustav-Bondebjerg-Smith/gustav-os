@@ -19,6 +19,12 @@ Personligt AI operating system for Gustav. Appen er en Next.js 16 dashboard-flad
 
 ## Lokal kørsel
 
+Repoet bor nu lokalt uden for iCloud:
+
+```bash
+cd /Users/gustavbondebjergsmith/Developer/gustav-os
+```
+
 ```bash
 npm install
 env -u ANTHROPIC_API_KEY npm run dev
@@ -39,6 +45,9 @@ node scripts/show-captures.mjs
 node scripts/show-actions.mjs
 node scripts/embed-captures.mjs
 node scripts/ask.mjs "hvad skal jeg huske?"
+node scripts/memory-import-workspace.mjs --dry-run
+node scripts/memory-import-workspace.mjs
+node scripts/memory-export-backup.mjs
 node scripts/telegram-webhook.mjs get
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/actions
 ```
@@ -65,6 +74,17 @@ npm_config_cache=/tmp/gustav-npm-cache npm install
 - `lib/proactive.ts` - morgenbrief, aften-refleksion og mønster-flag.
 - `scripts/` - CLI og lokale workers til Telegram, embeddings, kalender og balance.
 - `supabase/migrations/` - SQL schema, actions og memory search RPC.
+
+## Supabase memory MCP
+
+Migration `supabase/migrations/0008_memory_sources.sql` udvider memory til canonical Supabase-sources, audit-log og `search_memory_v2`, uden at ændre den gamle `search_memory`.
+
+- Import dry-run: `npm run memory:import:dry`
+- Import hele workspacet + `gustav-os`: `npm run memory:import`
+- Eksportér lokal backup: `npm run memory:export`
+- Start MCP server manuelt: `MEMORY_MCP_ACCESS=full npm run memory:mcp`
+
+Repo-runtime ligger i `/Users/gustavbondebjergsmith/Developer/gustav-os`, så MCP-serveren starter uden for den iCloud-synkede `Documents`-mappe. `npm run memory:import` scanner både `/Users/gustavbondebjergsmith/Documents/AI assistent` og repo-runtime, hvor repo-filer gemmes med `gustav-os/...` source-keys. Codex projektkonfig ligger i `.codex/config.toml`; Claude Code projektkonfig ligger i `.mcp.json`. Global Codex og global Claude Code har full-access memory via user config. Backup skrives til `/Users/gustavbondebjergsmith/Documents/AI assistent/supabase-memory-backup/` og er ikke canonical source.
 
 ## Telegram webhook
 
