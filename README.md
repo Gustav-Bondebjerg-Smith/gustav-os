@@ -74,7 +74,7 @@ npm_config_cache=/tmp/gustav-npm-cache npm install
 - `lib/cron.ts` - `CRON_SECRET`-auth + DB-lock til serverless cron.
 - `lib/calendar.ts` - server-side Google Calendar read/write helper.
 - `lib/actions-runner.ts` - udfører due actions efter veto-vindue.
-- `lib/proactive.ts` - morgenbrief, aften-refleksion og mønster-flag.
+- `lib/proactive.ts` - ugentligt mønster-flag (morgen-/aftenbrief afskaffet 2026-06-03).
 - `scripts/` - CLI og lokale workers til Telegram, embeddings, kalender og balance.
 - `supabase/migrations/` - SQL schema, actions og memory search RPC.
 
@@ -122,8 +122,6 @@ Webhook kræver:
 Cron endpoints:
 
 - `/api/cron/actions` - udfører kalender-actions efter veto-vindue.
-- `/api/cron/morning` - sender morgenbrief på Telegram.
-- `/api/cron/evening` - sender aften-refleksion på Telegram.
 - `/api/cron/patterns` - sender kun mønster-flag hvis der er et konkret signal.
 
 Alle kræver `Authorization: Bearer <CRON_SECRET>`.
