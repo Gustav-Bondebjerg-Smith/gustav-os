@@ -140,7 +140,10 @@ function buildSystem(now: Date): string {
     '- save_note er for ægte noter/reminders/tanker - ikke en default-skraldespand for ting du ikke gad forstå.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
+    '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
     '- Er beskeden ægte tvetydig (du kan ikke afgøre hvilken handling, eller en slet/ret mangler hvilket event det gælder), så LAD VÆRE med at kalde et værktøj. Svar i stedet med ét kort dansk opklarende spørgsmål. Gem ALDRIG noget i stilhed du var i tvivl om.',
+    '- Indeholder samtalen ovenfor et spørgsmål du selv har stillet, er Gustavs nye besked svaret på det. Brug HELE samtalen til at udføre den oprindelige handling - spørg ikke igen om noget der allerede er oplyst.',
+    '- Skriv aldrig tankestreger (lange — eller korte –) i dine spørgsmål eller svar. Brug punktum eller almindelig bindestreg.',
   ].join('\n')
 }
 
@@ -149,13 +152,23 @@ export type RouterResult =
   | { kind: 'ask'; askText: string }
   | { kind: 'none' }
 
+// En tur i samtalen. routeMessage kan tage enten en enkelt streng (statsløst, ét
+// kald) eller hele samtalen (flertur), så et svar på routerens eget spørgsmål
+// vurderes MED kontekst i stedet for kontekstløst.
+export type RouterTurn = { role: 'user' | 'assistant'; content: string }
+
 type AnthropicContentBlock =
   | { type: 'tool_use'; name: string; input?: Record<string, unknown> }
   | { type: 'text'; text: string }
   | { type: string; [k: string]: unknown }
 
-// Returnerer modellens valg uden at udføre det.
-export async function routeMessage(text: string, now: Date = new Date()): Promise<RouterResult> {
+// Returnerer modellens valg uden at udføre det. input er enten Gustavs ene besked
+// (statsløst) eller hele samtalen inkl. routerens tidligere spørgsmål (flertur).
+export async function routeMessage(
+  input: string | RouterTurn[],
+  now: Date = new Date()
+): Promise<RouterResult> {
+  const messages = typeof input === 'string' ? [{ role: 'user' as const, content: input }] : input
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -169,7 +182,7 @@ export async function routeMessage(text: string, now: Date = new Date()): Promis
       temperature: 0,
       system: buildSystem(now),
       tools: TOOLS,
-      messages: [{ role: 'user', content: text }],
+      messages,
     }),
   })
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)

@@ -116,7 +116,10 @@ function buildSystem(now) {
     '- save_note er for ægte noter/reminders/tanker - ikke en default-skraldespand for ting du ikke gad forstå.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
+    '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
     '- Er beskeden ægte tvetydig (du kan ikke afgøre hvilken handling, eller en slet/ret mangler hvilket event det gælder), så LAD VÆRE med at kalde et værktøj. Svar i stedet med ét kort dansk opklarende spørgsmål. Gem ALDRIG noget i stilhed du var i tvivl om.',
+    '- Indeholder samtalen ovenfor et spørgsmål du selv har stillet, er Gustavs nye besked svaret på det. Brug HELE samtalen til at udføre den oprindelige handling - spørg ikke igen om noget der allerede er oplyst.',
+    '- Skriv aldrig tankestreger (lange — eller korte –) i dine spørgsmål eller svar. Brug punktum eller almindelig bindestreg.',
   ].join('\n')
 }
 
@@ -124,7 +127,8 @@ function buildSystem(now) {
 //   kind: 'tool'  -> modellen valgte et værktøj (tool/input udfyldt)
 //   kind: 'ask'   -> modellen var i tvivl og stiller et spørgsmål (askText udfyldt)
 //   kind: 'none'  -> intet brugbart svar
-export async function routeMessage(text, now = new Date()) {
+export async function routeMessage(input, now = new Date()) {
+  const messages = typeof input === 'string' ? [{ role: 'user', content: input }] : input
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -138,7 +142,7 @@ export async function routeMessage(text, now = new Date()) {
       temperature: 0,
       system: buildSystem(now),
       tools: TOOLS,
-      messages: [{ role: 'user', content: text }],
+      messages,
     }),
   })
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`)
@@ -156,9 +160,19 @@ export async function routeMessage(text, now = new Date()) {
 
 // Tillader direkte CLI-test: node scripts/agent-router.mjs "din besked"
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const msg = process.argv.slice(2).join(' ')
-  if (!msg) { console.error('Brug: node scripts/agent-router.mjs "besked"'); process.exit(1) }
-  const out = await routeMessage(msg)
+  const args = process.argv.slice(2)
+  // Flertur-test: node scripts/agent-router.mjs --convo "user 1" "assistant spørgsmål" "user svar"
+  // (skiftevis user/assistant, starter med user). Ellers: enkelt besked som streng.
+  const input =
+    args[0] === '--convo'
+      ? args.slice(1).map((content, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content }))
+      : args.join(' ')
+  const empty = Array.isArray(input) ? input.length === 0 : !input
+  if (empty) {
+    console.error('Brug: node scripts/agent-router.mjs "besked"  ELLER  --convo "user" "assistant" "user"')
+    process.exit(1)
+  }
+  const out = await routeMessage(input)
   if (out.kind === 'tool') console.log(`TOOL: ${out.tool}\n`, JSON.stringify(out.input, null, 2))
   else if (out.kind === 'ask') console.log(`SPØRGER: ${out.askText}`)
   else console.log('INTET SVAR')

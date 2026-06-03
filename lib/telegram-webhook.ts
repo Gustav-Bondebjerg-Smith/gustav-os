@@ -8,7 +8,7 @@ import type { Chunk } from './ask-types'
 import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
-import { routeMessage, type RouterResult } from './agent-router'
+import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
@@ -1607,6 +1607,65 @@ async function handleAgentCreate(
   return { status: 'processed', reason: 'agent_create_proposed' }
 }
 
+// Kort-tids samtale-hukommelse for routeren. Når routeren stiller et afklarende
+// spørgsmål, gemmer vi samtalen-indtil-nu, så Gustavs NÆSTE besked (svaret) sendes
+// med som kontekst og fuldfører den oprindelige handling i stedet for at blive
+// vurderet kontekstløst. Ryddes så snart en handling udføres, og udløber efter
+// vinduet så en gammel halv-samtale ikke hænger på en helt ny besked.
+const CLARIFY_WINDOW_MS = (Number(process.env.CLARIFY_WINDOW_MINUTES) || 5) * 60 * 1000
+const CLARIFY_MAX_TURNS = 8 // cap på gemte ture, så hukommelsen ikke vokser ubundet
+
+// Alle tre helpers fejler blødt: mangler tabellen (migration ikke kørt) eller
+// driller DB'en, degraderer vi til statsløs routing i stedet for at vælte hele
+// webhooken. Routeren virker så præcis som før hukommelsen blev tilføjet.
+async function loadClarification(chatId: number): Promise<RouterTurn[] | null> {
+  try {
+    const sb = getSupabase()
+    const { data, error } = await sb
+      .from('pending_clarification')
+      .select('messages, updated_at')
+      .eq('chat_id', chatId)
+      .maybeSingle()
+    if (error) throw new Error(error.message)
+    if (!data) return null
+    if (Date.now() - new Date(data.updated_at).getTime() > CLARIFY_WINDOW_MS) {
+      await clearClarification(chatId)
+      return null
+    }
+    return Array.isArray(data.messages) ? (data.messages as RouterTurn[]) : null
+  } catch (e) {
+    console.error('pending_clarification load fejlede (statsløs fallback):', e)
+    return null
+  }
+}
+
+async function saveClarification(chatId: number, messages: RouterTurn[]): Promise<void> {
+  try {
+    const sb = getSupabase()
+    const { error } = await sb.from('pending_clarification').upsert(
+      {
+        chat_id: chatId,
+        messages: messages.slice(-CLARIFY_MAX_TURNS),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'chat_id' }
+    )
+    if (error) throw new Error(error.message)
+  } catch (e) {
+    console.error('pending_clarification gem fejlede (ignoreret):', e)
+  }
+}
+
+async function clearClarification(chatId: number): Promise<void> {
+  try {
+    const sb = getSupabase()
+    const { error } = await sb.from('pending_clarification').delete().eq('chat_id', chatId)
+    if (error) throw new Error(error.message)
+  } catch (e) {
+    console.error('pending_clarification ryd fejlede (ignoreret):', e)
+  }
+}
+
 async function dispatchViaAgent(
   msg: TelegramMessage,
   text: string,
@@ -1615,19 +1674,31 @@ async function dispatchViaAgent(
   const now = msg.date ? new Date(msg.date * 1000) : new Date()
   await sendChatAction(msg.chat.id)
 
+  // Hent evt. åben afklaring og byg samtalen, så et svar på routerens spørgsmål
+  // vurderes MED kontekst (fuldfører handlingen) i stedet for kontekstløst (loop).
+  const prior = await loadClarification(msg.chat.id)
+  const convo: RouterTurn[] = [...(prior || []), { role: 'user', content: text }]
+
   let routed: RouterResult
   try {
-    routed = await routeMessage(text, now)
+    routed = await routeMessage(convo, now)
   } catch (e) {
     console.error('agent-router fejlede (falder tilbage til capture):', e)
+    await clearClarification(msg.chat.id)
     return handleCapture(msg, text, source)
   }
 
   // Tvivl -> afklarende spørgsmål, aldrig en tavs note (kerne-kravet fra council).
+  // Gem samtalen (inkl. spørgsmålet) så Gustavs næste besked har kontekst.
   if (routed.kind === 'ask') {
     await sendMessage(msg.chat.id, routed.askText)
+    await saveClarification(msg.chat.id, [...convo, { role: 'assistant', content: routed.askText }])
     return { status: 'processed', reason: 'agent_asked' }
   }
+
+  // Enhver ikke-spørgsmål-udgang afslutter afklaringen: ryd state før dispatch.
+  await clearClarification(msg.chat.id)
+
   if (routed.kind !== 'tool') {
     return handleCapture(msg, text, source)
   }
