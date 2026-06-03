@@ -3,8 +3,7 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { ask } from './ask'
-import { fmtDate, fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
-import type { Chunk } from './ask-types'
+import { fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
 import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
@@ -901,16 +900,6 @@ function withCphOffset(naive: string): string {
   return `${naive}${sign}${hh}:00`
 }
 
-function formatSources(sources: Chunk[]): string {
-  if (!sources.length) return ''
-  const lines = sources.map((c, i) => {
-    const sim = c.similarity.toFixed(2)
-    const preview = c.content.length > 80 ? c.content.slice(0, 80) + '...' : c.content
-    return `[${i + 1}] ${fmtDate(c.created_at)} (sim=${sim}): ${preview}`
-  })
-  return 'Kilder:\n' + lines.join('\n')
-}
-
 async function handleVeto(msg: TelegramMessage): Promise<HandleResult> {
   const sb = getSupabase()
   const target = await findVetoTarget(msg.reply_to_message?.message_id)
@@ -949,9 +938,12 @@ async function answerQuestion(
 ): Promise<HandleResult> {
   await sendChatAction(chatId)
   try {
-    const { answer, sources } = await ask(question)
-    const srcText = sources.length ? '\n\n' + formatSources(sources) : ''
-    await sendMessage(chatId, answer + srcText)
+    // Lærte globale fakta sendes med, så svaret respekterer Gustavs præferencer
+    // (fx "angiv ikke kilder"). Modellen ejer nu kilde-angivelsen i stedet for en
+    // kode-genereret blok, så en præference faktisk kan slå den fra.
+    const globalFacts = formatGlobalForPrompt(await recallGlobal())
+    const { answer } = await ask(question, globalFacts)
+    await sendMessage(chatId, answer)
     return { status: 'processed', reason: `${label}_answered` }
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)

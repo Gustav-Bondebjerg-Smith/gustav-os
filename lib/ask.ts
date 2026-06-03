@@ -33,14 +33,19 @@ function buildContext(chunks: Chunk[]): string {
     .join('\n\n')
 }
 
-async function askClaude(question: string, chunks: Chunk[]): Promise<string> {
+async function askClaude(question: string, chunks: Chunk[], globalFacts = ''): Promise<string> {
+  const facts = globalFacts.trim()
   const system = [
     'Du er Gustav OS, en personlig assistent der svarer Gustav ud fra hans egen second brain.',
     'Stemme: dansk, direkte, konstruktivt udfordrende. Ikke refleksiv enighed. Ingen em-dashes.',
     'Medicinske fagtermer på latin når relevant. Han er medicinstuderende SDU (4. semester), sygeplejevikar og forskningsassistent.',
+    ...(facts ? ['', facts] : []),
     '',
     'Du får kontekst-uddrag fra hans captures (Telegram-tekst og voicenotes). Hver kilde har et nummer [1], [2], ...',
-    'Svar KORT og konkret. Citer kilderne ved deres nummer (fx "[2]") når du bruger dem.',
+    'Svar KORT og konkret.',
+    facts
+      ? 'Som standard: afslut med en kort "Kilder:"-linje der nævner hvilke noter (dato/emne) du brugte. MEN følg Gustavs lærte præferencer ovenfor - beder de om ikke at vise eller angive kilder, så drop kilde-linjen OG kilde-numrene helt.'
+      : 'Citer kilderne ved deres nummer (fx "[2]") når du bruger dem.',
     'Hvis intet svar findes i kilderne, sig det rent ud i ÉN sætning. Lad være med at fabrikere.',
     'Hvis spørgsmålet er vagt, foreslå en omformulering. Ikke en lang afdækning.',
   ].join('\n')
@@ -73,7 +78,7 @@ async function askClaude(question: string, chunks: Chunk[]): Promise<string> {
 }
 
 // Public: ask(question) -> { answer, sources }. Samme kontrakt som CLI-versionen.
-export async function ask(question: string): Promise<AskResult> {
+export async function ask(question: string, globalFacts = ''): Promise<AskResult> {
   if (!question?.trim()) throw new Error('ask: tomt spørgsmål')
   const sources = await searchMemory(question)
   if (!sources.length) {
@@ -82,6 +87,6 @@ export async function ask(question: string): Promise<AskResult> {
       sources: [],
     }
   }
-  const answer = await askClaude(question, sources)
+  const answer = await askClaude(question, sources, globalFacts)
   return { answer, sources }
 }

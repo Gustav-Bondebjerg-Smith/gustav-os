@@ -50,3 +50,6 @@ golden-set-raw.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# claude code lokale settings (tilladelses-regler mm., kun din maskine)
+.claude/settings.local.json
