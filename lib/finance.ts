@@ -477,6 +477,27 @@ export async function getSinSummary(): Promise<SinSummary[]> {
     .sort((a, b) => b.amount - a.amount)
 }
 
+// Ugens finans-resumé til den ugentlige review (Modul 5): nettoformue, ugens
+// konto-Δ (checking nu vs. 7 dage siden) + denne måneds syndeudgifter.
+// Genbruger getNetWorth (checking + nettoformue) og closingBalanceOnOrBefore
+// (saldo-kæden) i stedet for at duplikere logik.
+export async function getWeeklyFinanceSummary(): Promise<{
+  netWorth: number
+  checking: number
+  weekSwing: number
+  sins: SinSummary[]
+}> {
+  const nw = await getNetWorth()
+  const weekAgo = (await closingBalanceOnOrBefore(addDaysYmd(todayCphYmd(), -7))) ?? nw.checking
+  const sins = await getSinSummary()
+  return {
+    netWorth: nw.netWorth,
+    checking: nw.checking,
+    weekSwing: round2(nw.checking - weekAgo),
+    sins,
+  }
+}
+
 // =============================== MANUELLE BALANCER ===============================
 
 export async function listManualBalances(): Promise<ManualBalance[]> {

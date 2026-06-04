@@ -481,9 +481,9 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .add-row.mb-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .add-row.mb-add input { flex: 1; min-width: 120px; }
 .mb-amt-in { flex: 0 0 110px !important; min-width: 90px !important; text-align: right; font-family: var(--font-mono); }
-.mb-add-btn, .upl-btn { background: var(--color-accent); color: #fff; border: none; border-radius: var(--radius-xs); padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.mb-add-btn:hover, .upl-btn:hover { filter: brightness(1.12); }
-.mb-add-btn:disabled, .upl-btn:disabled { opacity: .5; cursor: default; filter: none; }
+.mb-add-btn, .upl-btn, .review-gen-btn { background: var(--color-accent); color: #fff; border: none; border-radius: var(--radius-xs); padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mb-add-btn:hover, .upl-btn:hover, .review-gen-btn:hover { filter: brightness(1.12); }
+.mb-add-btn:disabled, .upl-btn:disabled, .review-gen-btn:disabled { opacity: .5; cursor: default; filter: none; }
 
 /* Upload */
 .upl { display: flex; flex-direction: column; gap: 12px; }
@@ -530,3 +530,35 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .review-card .sect .no { color: var(--color-warn); }
 .review-hint { font-size: 12.5px; color: var(--color-ink-3); margin-bottom: var(--space-3); }
 .txl-note { font-size: 12px; color: var(--color-pos); margin-bottom: 10px; font-family: var(--font-mono); }
+
+/* Modul 5: ugentlig review */
+.review-gen { display: inline-flex; align-items: center; gap: 10px; }
+.review-gen-msg { font-size: 12px; color: var(--color-ink-3); }
+.review-report { font-size: 13.5px; line-height: 1.65; color: var(--color-ink-2); }
+.review-report .rr-h { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--color-accent); margin: var(--space-4) 0 var(--space-2); }
+.review-report .rr-h:first-child { margin-top: 0; }
+.review-report p { margin: 0 0 var(--space-2); }
+.review-report ul { list-style: none; margin: 0 0 var(--space-2); padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.review-report ul li { position: relative; padding-left: 16px; }
+.review-report ul li::before { content: ""; position: absolute; left: 2px; top: 8px; width: 5px; height: 5px; border-radius: 1px; background: var(--color-accent); }
+.review-report ol { margin: 0 0 var(--space-2); padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.review-report ol li { padding-left: 4px; }
+.review-report ol li::marker { color: var(--color-accent); font-family: var(--font-mono); font-weight: 600; }
+.review-report strong { color: var(--color-ink-1); font-weight: 600; }
+
+.review-stats { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.rs-item { display: flex; flex-direction: column; gap: 2px; }
+.rs-k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--color-ink-4); }
+.rs-v { font-size: 14px; font-weight: 600; color: var(--color-ink-1); }
+.rs-v.pos { color: var(--color-pos); }
+.rs-v.neg { color: var(--color-neg); }
+.rs-time .rs-v { font-size: 12px; font-weight: 500; color: var(--color-ink-2); }
+.review-meta { font-size: 11px; color: var(--color-ink-4); margin-top: var(--space-3); font-family: var(--font-mono); }
+
+.review-archive { display: flex; flex-direction: column; gap: var(--space-2); }
+.review-arch-item { border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-3); }
+.review-arch-item > summary { cursor: pointer; display: flex; align-items: baseline; gap: var(--space-3); list-style: none; }
+.review-arch-item > summary::-webkit-details-marker { display: none; }
+.review-arch-item .raw-week { font-size: 13px; font-weight: 600; color: var(--color-ink-1); }
+.review-arch-item .raw-meta { font-size: 11px; color: var(--color-ink-4); font-family: var(--font-mono); }
+.review-arch-item[open] > summary { margin-bottom: var(--space-3); }

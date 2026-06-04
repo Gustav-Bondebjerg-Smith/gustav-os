@@ -34,6 +34,7 @@ const navItems = [
   { href: '/maal', label: 'Mål' },
   { href: '/finans', label: 'Finans' },
   { href: '/balance', label: 'Balance' },
+  { href: '/review', label: 'Review' },
   { href: '/captures', label: 'Captures' },
   { href: '/ask', label: 'Ask' },
 ]

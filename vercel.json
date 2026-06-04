@@ -12,6 +12,10 @@
     {
       "path": "/api/cron/finance-classify",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/review",
+      "schedule": "0 18 * * 0"
     }
   ]
 }
