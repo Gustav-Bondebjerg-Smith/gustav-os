@@ -9,6 +9,7 @@
 // IKKE selv et sin_tag - synderne ligger på linjerne (ingen dobbelttælling).
 import 'server-only'
 import { getSupabase } from './supabase'
+import { snapshotNetWorth } from './finance'
 import { saveMemory, recallForScope } from './memory-facts'
 import {
   isCategory,
@@ -431,6 +432,7 @@ export type FinanceClassifyResult = {
   grocery: number // matchede -> dagligvarer (gratis)
   lines: number // varelinjer klassificeret
   transactions: number // umatchede transaktioner klassificeret
+  snapshot: boolean // dagens nettoformue-snapshot skrevet
   remaining: number // uklassificerede transaktioner tilbage
 }
 
@@ -449,10 +451,19 @@ export async function runFinanceClassifyBatch(
     concurrency: 4,
   })
 
+  // Dagligt nettoformue-snapshot (best-effort, idempotent pr. dato).
+  let snapshot = false
+  try {
+    await snapshotNetWorth()
+    snapshot = true
+  } catch (e) {
+    console.error('snapshotNetWorth i finans-cron fejlede:', e)
+  }
+
   const sb = getSupabase()
   const { count } = await sb
     .from('transactions')
     .select('id', { count: 'exact', head: true })
     .is('category', null)
-  return { grocery, lines, transactions, remaining: count ?? 0 }
+  return { grocery, lines, transactions, snapshot, remaining: count ?? 0 }
 }

@@ -139,6 +139,14 @@ export type SinSummary = {
   amount: number // forbrug denne måned på dette sin_tag
 }
 
+// Ét punkt på nettoformue-kurven (et dagligt snapshot). checking = bank-saldo,
+// netWorth = checking + manuelle balancer (historisk antaget = nuværende).
+export type NetWorthPoint = {
+  date: string // YYYY-MM-DD
+  netWorth: number
+  checking: number
+}
+
 // Renser tekstfelter før DB: fjerner kontroltegn (inkl. NUL 0x00, som Postgres'
 // text-type ikke kan gemme - latin1-dekodning af en 0x00-byte giver U+0000) og
 // kollapser whitespace. Regex bygges fra en streng, så kilden kun har printbar

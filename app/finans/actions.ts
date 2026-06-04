@@ -14,6 +14,7 @@ import {
   getTransactionLines,
   getTransaction,
   applyLearnedCategory,
+  backfillNetWorthSnapshots,
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
@@ -51,6 +52,8 @@ export async function importBankAction(formData: FormData): Promise<ImportResult
   try {
     const buf = Buffer.from(await file.arrayBuffer())
     const res = await importBankCsv(buf.toString('latin1'), file.name)
+    // Udvid nettoformue-kurven med de nye dage (best-effort - må ikke vælte importen).
+    await backfillNetWorthSnapshots().catch((e) => console.error('backfill efter bank-import fejlede:', e))
     await notify(
       `💳 Bank importeret: ${res.inserted} nye posteringer (af ${res.parsed}).` +
         (res.inserted > 0 ? ' Kategoriseres i baggrunden.' : ''),

@@ -562,3 +562,15 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .review-arch-item .raw-week { font-size: 13px; font-weight: 600; color: var(--color-ink-1); }
 .review-arch-item .raw-meta { font-size: 11px; color: var(--color-ink-4); font-family: var(--font-mono); }
 .review-arch-item[open] > summary { margin-bottom: var(--space-3); }
+
+/* Nettoformue-kurve (Modul 4) */
+.nw-curve { margin-top: var(--space-3); }
+.nwc-svg { display: block; width: 100%; height: 60px; }
+.nw-curve.compact { margin-top: var(--space-2); }
+.nw-curve.compact .nwc-svg { height: 32px; }
+.nwc-line { stroke: var(--color-accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.nwc-area { fill: var(--color-accent); opacity: .10; }
+.nwc-svg.down .nwc-line { stroke: var(--color-neg); }
+.nwc-svg.down .nwc-area { fill: var(--color-neg); }
+.nwc-axis { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; font-size: 10.5px; color: var(--color-ink-4); }
+.nwc-axis .nwc-range { color: var(--color-ink-3); }

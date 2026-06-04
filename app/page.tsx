@@ -6,9 +6,10 @@ import { getEvents, type GoogleCalendarEvent } from '@/lib/calendar'
 import { startOfTodayCph, endOfTodayCph, isPastDayCph } from '@/lib/format'
 import { listTasks, type Task } from '@/lib/tasks'
 import { listGoals, SCOPES, SCOPE_LABEL, type Goal } from '@/lib/goals'
-import { getNetWorth, getSinSummary, SIN_LABEL, type NetWorth, type SinSummary } from '@/lib/finance'
+import { getNetWorth, getSinSummary, getNetWorthHistory, SIN_LABEL, type NetWorth, type SinSummary, type NetWorthPoint } from '@/lib/finance'
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
+import { NetWorthCurve } from '@/components/NetWorthCurve'
 import { Check, AlertTriangle } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
@@ -65,9 +66,11 @@ export default async function HomePage() {
   // Må aldrig fejle forsiden.
   let nw: NetWorth | null = null
   let sins: SinSummary[] = []
+  let nwHistory: NetWorthPoint[] = []
   try {
     nw = await getNetWorth()
     sins = await getSinSummary()
+    nwHistory = await getNetWorthHistory(90)
   } catch {
     /* tomt finans-kort hvis hentning fejler */
   }
@@ -130,6 +133,7 @@ export default async function HomePage() {
                 </div>
               </div>
             </Link>
+            {nwHistory.length > 1 && <NetWorthCurve points={nwHistory} compact />}
             <div className="sin">
               <div className="sin-head">
                 <span className="l">

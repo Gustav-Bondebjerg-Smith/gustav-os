@@ -21,6 +21,7 @@ import {
   type TransactionLine,
   type ManualBalance,
   type NetWorth,
+  type NetWorthPoint,
   type SinSummary,
   type ParsedBankTx,
   type ParsedReceipt,
@@ -377,6 +378,19 @@ export async function getTransactionLines(transactionId: string): Promise<Transa
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+// Dagens luk-saldo ud fra dagens rækker: den saldo der ikke er nogen andens
+// "før-saldo" (= balance - amount). Korrekt uden gemt sekvens og uafhængigt af
+// import-rækkefølge. Delt af closingBalanceOnOrBefore + backfillNetWorthSnapshots.
+function dayClosingBalance(txns: Array<{ balance: number; amount: number }>): number | null {
+  if (txns.length === 0) return null
+  if (txns.length === 1) return txns[0].balance
+  const befores = new Set(txns.map((t) => round2(t.balance - t.amount)))
+  const finals = txns.filter((t) => !befores.has(round2(t.balance)))
+  if (finals.length === 1) return finals[0].balance
+  // Fallback (uventet kæde, fx indsættelse + køb der nuller ud): laveste saldo.
+  return finals[0]?.balance ?? txns.reduce((m, t) => Math.min(m, t.balance), txns[0].balance)
+}
+
 // Luk-saldo på den seneste dag med posteringer på/før en dato (YMD). Same-day-
 // rækkefølge er IKKE gemt (bulk-insert bevarer den ikke), så vi rekonstruerer
 // den deterministisk fra saldo-kæden: dagens luk-saldo er den saldo der ikke er
@@ -405,14 +419,7 @@ async function closingBalanceOnOrBefore(dateYmd: string): Promise<number | null>
     const row = r as Record<string, unknown>
     return { balance: Number(row.balance), amount: Number(row.amount) }
   })
-  if (txns.length === 0) return null
-  if (txns.length === 1) return txns[0].balance
-
-  const befores = new Set(txns.map((t) => round2(t.balance - t.amount)))
-  const finals = txns.filter((t) => !befores.has(round2(t.balance)))
-  if (finals.length === 1) return finals[0].balance
-  // Fallback (uventet kæde, fx indsættelse + køb der nuller ud): laveste saldo.
-  return finals[0]?.balance ?? txns.reduce((m, t) => Math.min(m, t.balance), txns[0].balance)
+  return dayClosingBalance(txns)
 }
 
 export async function getNetWorth(): Promise<NetWorth> {
@@ -496,6 +503,109 @@ export async function getWeeklyFinanceSummary(): Promise<{
     weekSwing: round2(nw.checking - weekAgo),
     sins,
   }
+}
+
+// ============================ NETTOFORMUE-HISTORIK ============================
+
+// Skriv (upsert) ét dagligt snapshot. checking = luk-saldo på/før datoen;
+// manuelle balancer er dem der gælder NU (vi har ingen historik på dem, så
+// kurvens FORM afspejler konto-saldoen). Idempotent pr. snapshot_date.
+export async function snapshotNetWorth(dateYmd?: string): Promise<void> {
+  const date = dateYmd ?? todayCphYmd()
+  const checking = (await closingBalanceOnOrBefore(date)) ?? 0
+  const balances = await listManualBalances()
+  const assets = balances.filter((b) => b.kind === 'asset')
+  const liabilities = balances.filter((b) => b.kind === 'liability')
+  const manualNet =
+    assets.reduce((a, b) => a + b.amount, 0) - liabilities.reduce((a, b) => a + b.amount, 0)
+  const sb = getSupabase()
+  const { error } = await sb.from('net_worth_snapshots').upsert(
+    {
+      snapshot_date: date,
+      checking: round2(checking),
+      other_assets: assets,
+      liabilities,
+      net_worth: round2(checking + manualNet),
+    },
+    { onConflict: 'snapshot_date' },
+  )
+  if (error) throw new Error(`snapshotNetWorth-fejl: ${error.message}`)
+}
+
+// Genopbyg HELE kurven fra bank-saldoens historik. Henter alle posteringer ÉN
+// gang (pagineret - PostgREST capper på 1000), grupperer pr. dato, regner dagens
+// luk-saldo, og bulk-upserter ét snapshot pr. transaktionsdag (saldoen ændrer
+// sig kun på dage med posteringer). Manuelle balancer = nuværende for alle dage.
+// Idempotent. Kaldes efter hver bank-import + kan køres manuelt.
+export async function backfillNetWorthSnapshots(): Promise<number> {
+  const sb = getSupabase()
+  const PAGE = 1000
+  const byDate = new Map<string, Array<{ balance: number; amount: number }>>()
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transactions')
+      .select('booked_date, balance, amount')
+      .not('balance', 'is', null)
+      .order('booked_date', { ascending: true })
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`backfill hent-fejl: ${error.message}`)
+    const rows = data ?? []
+    for (const r of rows) {
+      const row = r as Record<string, unknown>
+      const d = String(row.booked_date)
+      const arr = byDate.get(d) ?? []
+      arr.push({ balance: Number(row.balance), amount: Number(row.amount) })
+      byDate.set(d, arr)
+    }
+    if (rows.length < PAGE) break
+  }
+  if (byDate.size === 0) return 0
+
+  const balances = await listManualBalances()
+  const assets = balances.filter((b) => b.kind === 'asset')
+  const liabilities = balances.filter((b) => b.kind === 'liability')
+  const manualNet =
+    assets.reduce((a, b) => a + b.amount, 0) - liabilities.reduce((a, b) => a + b.amount, 0)
+
+  const snapshots = [...byDate.entries()]
+    .map(([date, txns]) => {
+      const checking = dayClosingBalance(txns)
+      if (checking === null) return null
+      return {
+        snapshot_date: date,
+        checking: round2(checking),
+        other_assets: assets,
+        liabilities,
+        net_worth: round2(checking + manualNet),
+      }
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+
+  for (const part of chunk(snapshots, 500)) {
+    const { error } = await sb.from('net_worth_snapshots').upsert(part, { onConflict: 'snapshot_date' })
+    if (error) throw new Error(`backfill upsert-fejl: ${error.message}`)
+  }
+  return snapshots.length
+}
+
+// Nettoformue-kurven: snapshots i et vindue (default 180 dage), stigende dato.
+export async function getNetWorthHistory(days = 180): Promise<NetWorthPoint[]> {
+  const sb = getSupabase()
+  const since = addDaysYmd(todayCphYmd(), -days)
+  const { data, error } = await sb
+    .from('net_worth_snapshots')
+    .select('snapshot_date, checking, net_worth')
+    .gte('snapshot_date', since)
+    .order('snapshot_date', { ascending: true })
+  if (error) throw new Error(`getNetWorthHistory-fejl: ${error.message}`)
+  return (data ?? []).map((r) => {
+    const row = r as Record<string, unknown>
+    return {
+      date: String(row.snapshot_date),
+      netWorth: Number(row.net_worth ?? 0),
+      checking: Number(row.checking ?? 0),
+    }
+  })
 }
 
 // =============================== MANUELLE BALANCER ===============================

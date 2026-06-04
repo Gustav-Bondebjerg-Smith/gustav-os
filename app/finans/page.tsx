@@ -7,18 +7,21 @@ import { AlertTriangle } from 'lucide-react'
 import {
   getNetWorth,
   getSinSummary,
+  getNetWorthHistory,
   listManualBalances,
   listTransactions,
   listReviewQueue,
   SIN_LABEL,
   type NetWorth,
   type SinSummary,
+  type NetWorthPoint,
   type ManualBalance,
   type Transaction,
 } from '@/lib/finance'
 import { FinanceManualBalances } from '@/components/FinanceManualBalances'
 import { FinanceUpload } from '@/components/FinanceUpload'
 import { FinanceTransactions } from '@/components/FinanceTransactions'
+import { NetWorthCurve } from '@/components/NetWorthCurve'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,12 +34,14 @@ export default async function FinansPage() {
   let balances: ManualBalance[] = []
   let txs: Transaction[] = []
   let reviewItems: Transaction[] = []
+  let history: NetWorthPoint[] = []
   let loadError: string | null = null
   let unclassified = 0
 
   try {
     nw = await getNetWorth()
     sins = await getSinSummary()
+    history = await getNetWorthHistory()
     balances = await listManualBalances()
     txs = await listTransactions({ limit: 80 })
     reviewItems = await listReviewQueue()
@@ -90,6 +95,7 @@ export default async function FinansPage() {
                 {nw.assets.length > 0 && <span className="pos">+ aktiver {fmt(nw.assets.reduce((a, b) => a + b.amount, 0))} kr</span>}
                 {nw.liabilities.length > 0 && <span className="neg">- gæld {fmt(nw.liabilities.reduce((a, b) => a + b.amount, 0))} kr</span>}
               </div>
+              <NetWorthCurve points={history} />
             </>
           )}
         </section>
