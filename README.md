@@ -11,11 +11,11 @@ Personligt AI operating system for Gustav. Appen er en Next.js 16 dashboard-flad
 
 ## Aktuel status
 
-- Fase 7 led 2 er kodet: Telegram webhook på `/api/telegram`.
-- Fase 7 led 3 er kodet: cron endpoints på `/api/cron/*`.
-- Webhook og cron bliver først live efter migrations `0004_telegram_webhook.sql` + `0005_cron.sql`, Vercel deploy og `setWebhook`.
-- Long-polling scriptet beholdes til lokal udvikling: `node scripts/telegram-poll.mjs`.
-- Watcher kan stadig køres lokalt: `node scripts/watch-actions.mjs`.
+- Hele byggeplanen (Modul 1-5) er live på `https://gustav-os.vercel.app`: redesignet "I dag"-forside, opgave-board, mål, personlig finans (import + AI-kategorisering + nettoformue-kurve) og ugentlig review.
+- Operatør-kortet viser ægte produktivitetstal (produktivitet + dækning) fra et dagligt nattecron.
+- Telegram-webhook, magic-link-auth, kalender-write (udføres straks, intet veto), second brain og tids-tracking kører.
+- Migrations til og med `0016_productivity_snapshots.sql` er kørt i prod. Seneste commit: 2e8711f (2026-06-05).
+- Lokale workers beholdes til udvikling: `node scripts/telegram-poll.mjs`, `node scripts/watch-actions.mjs`.
 
 ## Lokal kørsel
 
@@ -62,7 +62,7 @@ npm_config_cache=/tmp/gustav-npm-cache npm install
 
 ## Arkitekturkort
 
-- `app/` - Next.js App Router dashboard: login, captures, actions, ask.
+- `app/` - Next.js App Router dashboard: I dag (forside), opgaver, maal, finans, review, balance, captures, ask, login.
 - `proxy.ts` - Next.js 16 proxy, refresh af Supabase cookies og auth-gating.
 - `lib/supabase.ts` - service role client. Server-only. Kun interne flows.
 - `lib/supabase-server.ts` - anon client med cookies. Bruges til bruger-sessioner.
@@ -75,6 +75,12 @@ npm_config_cache=/tmp/gustav-npm-cache npm install
 - `lib/calendar.ts` - server-side Google Calendar read/write helper.
 - `lib/actions-runner.ts` - udfører due actions efter veto-vindue.
 - `lib/proactive.ts` - ugentligt mønster-flag (morgen-/aftenbrief afskaffet 2026-06-03).
+- `lib/tasks.ts` / `lib/goals.ts` - opgave-board + mål (server-only, med `-shared` klient-typer).
+- `lib/finance.ts` - personlig finans: import, reconciliation, nettoformue, snapshots (+ `-shared`/`-csv`/`-storebox`/`-reconcile`/`-classify`).
+- `lib/balance.ts` - tids-balance fra kalender (Sonnet-kategorisering, `unstable_cache`).
+- `lib/weekly-review.ts` - ugentlig review (Sonnet, gemt + Telegram-leveret).
+- `lib/productivity.ts` - dagligt produktivitets-snapshot (produktivitet + dækning, genbruger `getBalance`).
+- `lib/capture.ts` - delt classify + saveCapture (Telegram + web).
 - `scripts/` - CLI og lokale workers til Telegram, embeddings, kalender og balance.
 - `supabase/migrations/` - SQL schema, actions og memory search RPC.
 
@@ -121,8 +127,11 @@ Webhook kræver:
 
 Cron endpoints:
 
-- `/api/cron/actions` - udfører kalender-actions efter veto-vindue.
-- `/api/cron/patterns` - sender kun mønster-flag hvis der er et konkret signal.
+- `/api/cron/actions` - udfører kalender-actions efter veto-vindue (dagligt + hvert 10. min via pg_cron).
+- `/api/cron/patterns` - ugentligt mønster-flag (søndag), kun ved konkret signal.
+- `/api/cron/finance-classify` - drainer finans-kategoriseringskøen + dagligt nettoformue-snapshot (dagligt + hvert kvarter via pg_cron, migration `0014`).
+- `/api/cron/review` - ugentlig review søndag aften til Telegram + `/review`.
+- `/api/cron/productivity` - dagligt produktivitets-snapshot (produktivitet + dækning over 30 dage) til operatør-kortet.
 
 Alle kræver `Authorization: Bearer <CRON_SECRET>`.
 
