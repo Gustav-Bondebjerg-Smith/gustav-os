@@ -1,82 +1,87 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { IBM_Plex_Sans, IBM_Plex_Mono, Newsreader } from 'next/font/google'
 import Link from 'next/link'
 import { headers } from 'next/headers'
-import { getServerSupabase } from '@/lib/supabase-server'
+import { Clock } from '@/components/Clock'
 import './globals.css'
 
-const geistSans = Geist({
-  variable: '--font-geist-sans',
+const plexSans = IBM_Plex_Sans({
+  variable: '--font-plex-sans',
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
 })
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
+const plexMono = IBM_Plex_Mono({
+  variable: '--font-plex-mono',
   subsets: ['latin'],
+  weight: ['400', '500', '600'],
+})
+const newsreader = Newsreader({
+  variable: '--font-newsreader',
+  subsets: ['latin'],
+  style: ['normal', 'italic'],
+  weight: ['400', '500'],
 })
 
 export const metadata: Metadata = {
-  title: 'Gustav OS',
+  title: 'gustav/os',
   description: 'Personligt AI operating system',
 }
 
-// Top-nav layout. Fra Fase 7 er dashboardet auth-gated af proxy.ts.
-// Layoutet skjuler nav + log-ud på /login så vi ikke distraherer der.
+// Topbar-faner. Opgaver/Mål/Finans har stub-sider indtil deres moduler bygges.
+const navItems = [
+  { href: '/', label: 'I dag' },
+  { href: '/opgaver', label: 'Opgaver' },
+  { href: '/maal', label: 'Mål' },
+  { href: '/finans', label: 'Finans' },
+  { href: '/balance', label: 'Balance' },
+  { href: '/captures', label: 'Captures' },
+  { href: '/ask', label: 'Ask' },
+]
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === '/') return pathname === '/'
+  return pathname === href || pathname.startsWith(href + '/')
+}
+
 export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
-  // Tjek pathname via header (proxy.ts sætter x-pathname).
+  // proxy.ts sætter x-pathname. Skjul topbar på login/auth.
   const h = await headers()
   const pathname = h.get('x-pathname') || ''
   const isLogin = pathname.startsWith('/login') || pathname.startsWith('/auth')
 
-  // Hent bruger til at vise email i nav (kun hvis logget ind).
-  let email: string | null = null
-  if (!isLogin) {
-    try {
-      const sb = await getServerSupabase()
-      const { data } = await sb.auth.getUser()
-      email = data.user?.email ?? null
-    } catch {
-      // Hvis Supabase er nede eller cookies er korrupte, fortsætter vi uden email.
-    }
-  }
-
   return (
-    <html lang="da" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <html
+      lang="da"
+      className={`${plexSans.variable} ${plexMono.variable} ${newsreader.variable} dark`}
+    >
+      <body>
         {!isLogin && (
-          <header className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-            <div className="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
-              <Link href="/" className="font-mono text-sm font-semibold tracking-tight">
-                gustav<span className="text-zinc-400">/os</span>
-              </Link>
-              <nav className="flex items-center gap-6 text-sm">
-                <Link href="/" className="hover:underline">I dag</Link>
-                <Link href="/balance" className="hover:underline">Balance</Link>
-                <Link href="/captures" className="hover:underline">Captures</Link>
-                <Link href="/actions" className="hover:underline">Actions</Link>
-                <Link href="/ask" className="hover:underline">Ask</Link>
-                {email && (
-                  <>
-                    <span className="text-zinc-400 text-xs hidden sm:inline">{email}</span>
-                    <form action="/auth/signout" method="post">
-                      <button
-                        type="submit"
-                        className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-                      >
-                        Log ud
-                      </button>
-                    </form>
-                  </>
-                )}
-              </nav>
-            </div>
+          <header className="topbar">
+            <Link href="/" className="brand">
+              <span className="dot" />gustav<span className="slash">/</span>os
+            </Link>
+            <nav className="tabs">
+              {navItems.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`tab ${isActive(pathname, item.href) ? 'active' : ''}`.trim()}
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </nav>
+            <Clock />
+            <form action="/auth/signout" method="post">
+              <button type="submit" className="logout">Log ud</button>
+            </form>
           </header>
         )}
-        <main className="flex-1 mx-auto w-full max-w-6xl px-6 py-8">{children}</main>
+        <main className="wrap">{children}</main>
       </body>
     </html>
   )
