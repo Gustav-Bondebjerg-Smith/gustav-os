@@ -427,6 +427,7 @@ export async function getNetWorth(): Promise<NetWorth> {
   const checking = (await closingBalanceOnOrBefore(today)) ?? 0
   const yestBal = (await closingBalanceOnOrBefore(addDaysYmd(today, -1))) ?? checking
   const monthBal = (await closingBalanceOnOrBefore(addMonthsYmd(today, -1))) ?? checking
+  const yearBal = (await closingBalanceOnOrBefore(addMonthsYmd(today, -12))) ?? checking
 
   const balances = await listManualBalances()
   const assets = balances.filter((b) => b.kind === 'asset')
@@ -441,6 +442,7 @@ export async function getNetWorth(): Promise<NetWorth> {
     // mellem redigeringer, så svinget afspejler den daglige konto-bevægelse.
     daySwing: checking - yestBal,
     monthSwing: checking - monthBal,
+    yearSwing: checking - yearBal,
     assets,
     liabilities,
   }

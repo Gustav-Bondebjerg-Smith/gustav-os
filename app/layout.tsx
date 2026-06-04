@@ -3,6 +3,7 @@ import { IBM_Plex_Sans, IBM_Plex_Mono, Newsreader } from 'next/font/google'
 import Link from 'next/link'
 import { headers } from 'next/headers'
 import { Clock } from '@/components/Clock'
+import { Tabs } from '@/components/Tabs'
 import './globals.css'
 
 const plexSans = IBM_Plex_Sans({
@@ -27,23 +28,6 @@ export const metadata: Metadata = {
   description: 'Personligt AI operating system',
 }
 
-// Topbar-faner. Opgaver/Mål/Finans har stub-sider indtil deres moduler bygges.
-const navItems = [
-  { href: '/', label: 'I dag' },
-  { href: '/opgaver', label: 'Opgaver' },
-  { href: '/maal', label: 'Mål' },
-  { href: '/finans', label: 'Finans' },
-  { href: '/balance', label: 'Balance' },
-  { href: '/review', label: 'Review' },
-  { href: '/captures', label: 'Captures' },
-  { href: '/ask', label: 'Ask' },
-]
-
-function isActive(pathname: string, href: string): boolean {
-  if (href === '/') return pathname === '/'
-  return pathname === href || pathname.startsWith(href + '/')
-}
-
 export default async function RootLayout({
   children,
 }: Readonly<{
@@ -65,17 +49,7 @@ export default async function RootLayout({
             <Link href="/" className="brand">
               <span className="dot" />gustav<span className="slash">/</span>os
             </Link>
-            <nav className="tabs">
-              {navItems.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`tab ${isActive(pathname, item.href) ? 'active' : ''}`.trim()}
-                >
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
+            <Tabs />
             <Clock />
             <form action="/auth/signout" method="post">
               <button type="submit" className="logout">Log ud</button>

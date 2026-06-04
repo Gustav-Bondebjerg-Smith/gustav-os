@@ -88,6 +88,10 @@ export default async function FinansPage() {
                     <div className="k">Denne måned</div>
                     <div className={`v num ${nw.monthSwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.monthSwing)}</div>
                   </div>
+                  <div className="swing">
+                    <div className="k">Dette år</div>
+                    <div className={`v num ${nw.yearSwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.yearSwing)}</div>
+                  </div>
                 </div>
               </div>
               <div className="nw-break">

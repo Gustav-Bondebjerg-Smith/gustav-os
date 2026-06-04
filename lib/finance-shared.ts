@@ -130,6 +130,7 @@ export type NetWorth = {
   checking: number // seneste konto-saldo fra CSV
   daySwing: number // Δ siden i går
   monthSwing: number // Δ siden sidste måned
+  yearSwing: number // Δ siden for 12 måneder siden
   assets: ManualBalance[]
   liabilities: ManualBalance[]
 }

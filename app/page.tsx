@@ -98,7 +98,7 @@ export default async function HomePage() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <span className="op-avatar"><img src="/gustav.jpg" alt="Gustav" /></span>
           <div className="op-id">
-            <div className="op-name">Gustav <span className="last">B.</span></div>
+            <div className="op-name">Gustav <span className="last">Bondebjerg Smith</span></div>
             <div className="op-role">Medicinstuderende · SDU Odense</div>
           </div>
         </div>
@@ -130,6 +130,7 @@ export default async function HomePage() {
                 <div className="swings">
                   <div className="swing"><div className="k">I dag</div><div className={`v num ${nw.daySwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.daySwing)}</div></div>
                   <div className="swing"><div className="k">Denne måned</div><div className={`v num ${nw.monthSwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.monthSwing)}</div></div>
+                  <div className="swing"><div className="k">Dette år</div><div className={`v num ${nw.yearSwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.yearSwing)}</div></div>
                 </div>
               </div>
             </Link>
