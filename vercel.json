@@ -16,6 +16,10 @@
     {
       "path": "/api/cron/review",
       "schedule": "0 18 * * 0"
+    },
+    {
+      "path": "/api/cron/productivity",
+      "schedule": "0 3 * * *"
     }
   ]
 }

@@ -10,6 +10,7 @@ import { getNetWorth, getSinSummary, getNetWorthHistory, SIN_LABEL, type NetWort
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
+import { getLatestProductivity, type ProductivitySnapshot } from '@/lib/productivity'
 import { Check, AlertTriangle } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
@@ -62,6 +63,16 @@ export default async function HomePage() {
     /* tomt mål-kort hvis hentning fejler */
   }
 
+  // Operatør-kort: ægte ugefokus (øverste uge-mål) + produktivitet (gemt af nattecron).
+  const weekGoals = goals.filter((g) => g.scope === 'week')
+  const focusGoal = weekGoals.find((g) => !g.done) ?? weekGoals[0] ?? null
+  let prod: ProductivitySnapshot | null = null
+  try {
+    prod = await getLatestProductivity()
+  } catch {
+    /* operatør-kortet viser "bygges op" hvis hentning fejler */
+  }
+
   // Finans-kort: nettoformue (fra bank-saldo) + denne måneds synder. Rigtige tal.
   // Må aldrig fejle forsiden.
   let nw: NetWorth | null = null
@@ -104,12 +115,23 @@ export default async function HomePage() {
         </div>
         <div className="op-stats">
           <div className="op-stat">
-            <div className="k">Fokus</div>
-            <div className="op-focus">Bestå farmakologi-afleveringen</div>
+            <div className="k">Ugefokus</div>
+            {focusGoal ? (
+              <div className="op-focus">{focusGoal.title}</div>
+            ) : (
+              <Link className="op-focus-empty" href="/maal">Sæt et ugefokus →</Link>
+            )}
           </div>
           <div className="op-stat">
-            <div className="k">Streak</div>
-            <div className="op-streak"><span className="n num">12</span><span className="u">dage</span></div>
+            <div className="k">Produktivitet · 30 dage</div>
+            {prod && prod.productivityPct !== null ? (
+              <div className="op-prod">
+                <span className="n num">{Math.round(prod.productivityPct)}<span className="u">%</span></span>
+                <span className="op-cover num">{Math.round(prod.coveragePct)}% af dagen logget</span>
+              </div>
+            ) : (
+              <div className="op-prod-empty">Bygges op. Log din tid i kalenderen.</div>
+            )}
           </div>
         </div>
       </Card>
