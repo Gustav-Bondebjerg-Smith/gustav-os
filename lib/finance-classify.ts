@@ -188,24 +188,41 @@ type TxRow = { id: string; text_raw: string; detail: string; amount: number }
 // Klassificér ALLE uklassificerede, umatchede transaktioner (category null +
 // intet storebox_receipt_id). Idempotent: kan køres igen for nye posteringer.
 export async function classifyUnmatchedTransactions(
-  opts: { batchSize?: number; concurrency?: number } = {},
+  opts: { batchSize?: number; concurrency?: number; max?: number } = {},
 ): Promise<number> {
   const sb = getSupabase()
   const batchSize = opts.batchSize ?? 15
 
   const rows: TxRow[] = []
-  const PAGE = 1000
-  for (let from = 0; ; from += PAGE) {
+  const pushRows = (page: Record<string, unknown>[]) => {
+    for (const r of page) {
+      rows.push({ id: String(r.id), text_raw: String(r.text_raw ?? ''), detail: String(r.detail ?? ''), amount: Number(r.amount) })
+    }
+  }
+  if (opts.max) {
+    // Bundet kørsel (cron): hent kun max rækker, ingen paginering.
     const { data, error } = await sb
       .from('transactions')
       .select('id, text_raw, detail, amount')
       .is('category', null)
       .is('storebox_receipt_id', null)
-      .range(from, from + PAGE - 1)
+      .limit(opts.max)
     if (error) throw new Error(`classify hent-fejl: ${error.message}`)
-    const page = (data ?? []) as Record<string, unknown>[]
-    for (const r of page) rows.push({ id: String(r.id), text_raw: String(r.text_raw ?? ''), detail: String(r.detail ?? ''), amount: Number(r.amount) })
-    if (page.length < PAGE) break
+    pushRows((data ?? []) as Record<string, unknown>[])
+  } else {
+    const PAGE = 1000
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb
+        .from('transactions')
+        .select('id, text_raw, detail, amount')
+        .is('category', null)
+        .is('storebox_receipt_id', null)
+        .range(from, from + PAGE - 1)
+      if (error) throw new Error(`classify hent-fejl: ${error.message}`)
+      const page = (data ?? []) as Record<string, unknown>[]
+      pushRows(page)
+      if (page.length < PAGE) break
+    }
   }
 
   // Anvend lærte regler FØRST: kendte forretninger kategoriseres deterministisk
@@ -352,7 +369,7 @@ async function classifyLinesBatch(
 // Klassificér alle uklassificerede varelinjer, grupperet pr. transaktion (så
 // Haiku får forretnings-konteksten). Idempotent.
 export async function classifyReceiptLines(
-  opts: { concurrency?: number } = {},
+  opts: { concurrency?: number; max?: number } = {},
 ): Promise<number> {
   const sb = getSupabase()
 
@@ -371,8 +388,11 @@ export async function classifyReceiptLines(
   }
   if (byTx.size === 0) return 0
 
+  // Bundet kørsel (cron): behandl højst opts.max kvitteringer pr. kald.
+  const entries = [...byTx.entries()].slice(0, opts.max ?? Infinity)
+
   // Forretningsnavn pr. transaktion (til kontekst).
-  const txIds = [...byTx.keys()]
+  const txIds = entries.map(([id]) => id)
   const merchantByTx = new Map<string, string>()
   for (const ids of chunk(txIds, 200)) {
     const { data } = await sb
@@ -385,7 +405,7 @@ export async function classifyReceiptLines(
   }
 
   let classified = 0
-  await mapWithConcurrency([...byTx.entries()], opts.concurrency ?? 5, async ([txId, lines]) => {
+  await mapWithConcurrency(entries, opts.concurrency ?? 5, async ([txId, lines]) => {
     try {
       const merchant = merchantByTx.get(txId) ?? ''
       const cls = await classifyLinesBatch(merchant, lines.map((l) => ({ text: l.text, amount: l.amount })))
@@ -403,4 +423,36 @@ export async function classifyReceiptLines(
     }
   })
   return classified
+}
+
+// =============================== CRON-BATCH ===============================
+
+export type FinanceClassifyResult = {
+  grocery: number // matchede -> dagligvarer (gratis)
+  lines: number // varelinjer klassificeret
+  transactions: number // umatchede transaktioner klassificeret
+  remaining: number // uklassificerede transaktioner tilbage
+}
+
+// Én BUNDET portion til cron-endpointet. Holder sig under serverless-timeout (60s)
+// og Haiku rate-limit: markMatched (0 kald) + få kvitteringer + ~maxTransactions
+// posteringer (lærte regler absorberer en del uden AI). Idempotent + sikker at
+// gentage, så cron'en dræner køen over et par kørsler efter en månedlig import.
+export async function runFinanceClassifyBatch(
+  opts: { maxTransactions?: number; maxReceipts?: number } = {},
+): Promise<FinanceClassifyResult> {
+  const grocery = await markMatchedTransactionsGrocery()
+  const lines = await classifyReceiptLines({ max: opts.maxReceipts ?? 8, concurrency: 4 })
+  const transactions = await classifyUnmatchedTransactions({
+    max: opts.maxTransactions ?? 100,
+    batchSize: 10,
+    concurrency: 4,
+  })
+
+  const sb = getSupabase()
+  const { count } = await sb
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .is('category', null)
+  return { grocery, lines, transactions, remaining: count ?? 0 }
 }

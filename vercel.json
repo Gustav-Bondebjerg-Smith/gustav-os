@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/patterns",
       "schedule": "0 11 * * 0"
+    },
+    {
+      "path": "/api/cron/finance-classify",
+      "schedule": "0 5 * * *"
     }
   ]
 }

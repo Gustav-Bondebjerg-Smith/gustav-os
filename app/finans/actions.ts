@@ -16,6 +16,7 @@ import {
   applyLearnedCategory,
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
+import { sendTelegramMessage } from '@/lib/telegram'
 import { isCategory, isSinTag, merchantToken, type TransactionLine } from '@/lib/finance-shared'
 import type { FinanceActionResult, ImportResult } from './state'
 
@@ -33,6 +34,15 @@ function revalidate(): void {
   revalidatePath('/')
 }
 
+// Kort proaktiv opsummering på Telegram. Best-effort - må aldrig vælte importen.
+async function notify(text: string): Promise<void> {
+  try {
+    await sendTelegramMessage(text)
+  } catch (e) {
+    console.error('Telegram-opsummering fejlede:', e)
+  }
+}
+
 // Bank-CSV upload. Filen er ISO-8859-1 (dansk bank-eksport) -> dekod som latin1.
 export async function importBankAction(formData: FormData): Promise<ImportResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
@@ -41,6 +51,10 @@ export async function importBankAction(formData: FormData): Promise<ImportResult
   try {
     const buf = Buffer.from(await file.arrayBuffer())
     const res = await importBankCsv(buf.toString('latin1'), file.name)
+    await notify(
+      `💳 Bank importeret: ${res.inserted} nye posteringer (af ${res.parsed}).` +
+        (res.inserted > 0 ? ' Kategoriseres i baggrunden.' : ''),
+    )
     revalidate()
     return { ok: true, message: `${res.inserted} nye posteringer importeret (af ${res.parsed} i filen).` }
   } catch (e) {
@@ -56,6 +70,9 @@ export async function importStoreboxAction(formData: FormData): Promise<ImportRe
   try {
     const text = await file.text()
     const res = await importStoreboxReceipts(text, file.name)
+    await notify(
+      `🧾 Storebox importeret: ${res.insertedReceipts} nye kvitteringer, ${res.matched} matchet mod bank, ${res.linesInserted} varelinjer.`,
+    )
     revalidate()
     return {
       ok: true,
