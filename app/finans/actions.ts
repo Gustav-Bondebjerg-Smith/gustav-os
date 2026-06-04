@@ -12,8 +12,11 @@ import {
   deleteManualBalance,
   setTransactionCategory,
   getTransactionLines,
+  getTransaction,
+  applyLearnedCategory,
 } from '@/lib/finance'
-import { isCategory, isSinTag, type TransactionLine } from '@/lib/finance-shared'
+import { saveFinanceRule } from '@/lib/finance-classify'
+import { isCategory, isSinTag, merchantToken, type TransactionLine } from '@/lib/finance-shared'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -111,15 +114,36 @@ export async function setCategoryAction(
   sinTag: string | null,
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  const cat = isCategory(category) ? category : null
+  const sin = isSinTag(sinTag) ? sinTag : null
   try {
-    await setTransactionCategory(
-      id,
-      isCategory(category) ? category : null,
-      isSinTag(sinTag) ? sinTag : null,
-      'manual',
-    )
+    await setTransactionCategory(id, cat, sin, 'manual')
+
+    // Lær af rettelsen: gem en regel for forretningen + anvend den retroaktivt på
+    // lignende usikre posteringer ("OS'en bliver klogere"). Best-effort - en
+    // lærings-fejl må aldrig vælte selve kategori-rettelsen.
+    let alsoUpdated = 0
+    if (cat) {
+      try {
+        const tx = await getTransaction(id)
+        const token = tx ? merchantToken(tx.text_raw) : ''
+        if (token) {
+          await saveFinanceRule(token, cat, sin)
+          alsoUpdated = await applyLearnedCategory(token, cat, sin)
+        }
+      } catch (e) {
+        console.error('finans-læring fejlede (kategori sat alligevel):', e)
+      }
+    }
+
     revalidate()
-    return { ok: true }
+    return {
+      ok: true,
+      message:
+        alsoUpdated > 0
+          ? `Lært. ${alsoUpdated} lignende postering${alsoUpdated === 1 ? '' : 'er'} rettet med.`
+          : undefined,
+    }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }

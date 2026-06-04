@@ -147,3 +147,44 @@ const CONTROL_CHARS = new RegExp('[\\u0000-\\u001F\\u007F]', 'g')
 export function cleanText(s: string | null | undefined): string {
   return (s ?? '').replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim()
 }
+
+// --- Lærende kategori-regler (spørge-loop) ---
+
+// Støj-ord i bank-tekst der ikke identificerer en forretning.
+const MERCHANT_NOISE = new Set([
+  'kob', 'kort', 'den', 'via', 'visa', 'mastercard', 'mobilepay', 'pay', 'paypal',
+  'wallet', 'google', 'apple', 'samsung', 'oneplus', 'klarna', 'izettle', 'sumup', 'nan',
+])
+const DIACRITICS = new RegExp('[\\u0300-\\u036f]', 'g')
+
+// Stabil forretnings-nøgle udledt af bank-teksten. Bruges som key for en lært
+// regel, så en rettelse på fx "NETTO 7103" auto-anvendes på al fremtidig "NETTO".
+// VIGTIGT: udledes ALTID fra bank-teksten (samme @-korruption af ø/å begge veje),
+// så lært og anvendt nøgle matcher. Nøglen er intern, ikke vist til Gustav.
+export function merchantToken(text: string): string {
+  const norm = (text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(DIACRITICS, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  for (const t of norm.split(' ')) {
+    if (t.length >= 3 && !/^\d+$/.test(t) && !MERCHANT_NOISE.has(t)) return t
+  }
+  return norm.split(' ')[0] ?? ''
+}
+
+// Lært regel <-> memory_facts.content (scope 'finance', key = merchantToken).
+// Fast format jeg selv skriver + parser, så anvendelsen er deterministisk.
+export function formatFinanceRule(category: Category, sin: SinTag | null): string {
+  return `kategori=${category}; sin=${sin ?? 'ingen'}`
+}
+export function parseFinanceRule(content: string): { category: Category | null; sin: SinTag | null } {
+  const cm = (content || '').match(/kategori=([a-zæøå]+)/i)
+  const sm = (content || '').match(/sin=([a-zæøå]+)/i)
+  return {
+    category: cm && isCategory(cm[1]) ? (cm[1] as Category) : null,
+    sin: sm && isSinTag(sm[1]) ? (sm[1] as SinTag) : null,
+  }
+}

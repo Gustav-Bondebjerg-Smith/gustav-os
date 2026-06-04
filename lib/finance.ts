@@ -12,6 +12,7 @@ import { parseStoreboxReceipts } from './finance-storebox'
 import { reconcile } from './finance-reconcile'
 import {
   isSinTag,
+  merchantToken,
   type Category,
   type SinTag,
   type CategorySource,
@@ -283,8 +284,70 @@ export async function listTransactions(filter: TransactionFilter = {}): Promise<
   return (data ?? []).map((r) => rowToTx(r as Record<string, unknown>))
 }
 
-export async function listReviewQueue(): Promise<Transaction[]> {
-  return listTransactions({ status: 'needs_review', limit: 200 })
+// Review-kø: posteringer der trænger til Gustavs blik. Bredt: eksplicit
+// needs_review (AI i tvivl) + 'andet'-fald-tilbage + endnu ukategoriseret.
+// Nyeste først. Når Gustav giver en rigtig kategori, falder de ud af køen.
+export async function listReviewQueue(limit = 40): Promise<Transaction[]> {
+  const sb = getSupabase()
+  const { data, error } = await sb
+    .from('transactions')
+    .select(TX_COLS)
+    .or('status.eq.needs_review,category.eq.andet,category.is.null')
+    .order('booked_date', { ascending: false })
+    .limit(limit)
+  if (error) throw new Error(`listReviewQueue-fejl: ${error.message}`)
+  return (data ?? []).map((r) => rowToTx(r as Record<string, unknown>))
+}
+
+export async function getTransaction(id: string): Promise<Transaction | null> {
+  const sb = getSupabase()
+  const { data, error } = await sb.from('transactions').select(TX_COLS).eq('id', id).maybeSingle()
+  if (error) throw new Error(`getTransaction-fejl: ${error.message}`)
+  return data ? rowToTx(data as Record<string, unknown>) : null
+}
+
+// Anvend en lært regel retroaktivt: sæt kategori/sin på ALLE endnu-usikre
+// posteringer (needs_review / 'andet' / ukategoriseret) med samme forretnings-
+// nøgle. Rører ALDRIG en sikkert klassificeret postering. Returnerer antal.
+// Det er "OS'en bliver klogere": ret én Netto -> alle usikre Netto rettes med.
+export async function applyLearnedCategory(
+  token: string,
+  category: Category,
+  sin: SinTag | null,
+): Promise<number> {
+  if (!token) return 0
+  const sb = getSupabase()
+  const candidates: { id: string; text_raw: string }[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transactions')
+      .select('id, text_raw')
+      .or('status.eq.needs_review,category.eq.andet,category.is.null')
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`applyLearnedCategory hent-fejl: ${error.message}`)
+    const page = (data ?? []) as Record<string, unknown>[]
+    for (const r of page) candidates.push({ id: String(r.id), text_raw: String(r.text_raw ?? '') })
+    if (page.length < PAGE) break
+  }
+  const ids = candidates.filter((c) => merchantToken(c.text_raw) === token).map((c) => c.id)
+  let updated = 0
+  for (let i = 0; i < ids.length; i += 200) {
+    const slice = ids.slice(i, i + 200)
+    const { error } = await sb
+      .from('transactions')
+      .update({
+        category,
+        sin_tag: sin,
+        category_source: 'rule',
+        status: 'classified',
+        updated_at: nowIso(),
+      })
+      .in('id', slice)
+    if (error) throw new Error(`applyLearnedCategory update-fejl: ${error.message}`)
+    updated += slice.length
+  }
+  return updated
 }
 
 export async function getTransactionLines(transactionId: string): Promise<TransactionLine[]> {

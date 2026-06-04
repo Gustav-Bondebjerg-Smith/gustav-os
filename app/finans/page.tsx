@@ -9,6 +9,7 @@ import {
   getSinSummary,
   listManualBalances,
   listTransactions,
+  listReviewQueue,
   SIN_LABEL,
   type NetWorth,
   type SinSummary,
@@ -29,6 +30,7 @@ export default async function FinansPage() {
   let sins: SinSummary[] = []
   let balances: ManualBalance[] = []
   let txs: Transaction[] = []
+  let reviewItems: Transaction[] = []
   let loadError: string | null = null
   let unclassified = 0
 
@@ -37,6 +39,7 @@ export default async function FinansPage() {
     sins = await getSinSummary()
     balances = await listManualBalances()
     txs = await listTransactions({ limit: 80 })
+    reviewItems = await listReviewQueue()
     unclassified = txs.filter((t) => t.category === null).length
   } catch (e) {
     loadError = e instanceof Error ? e.message : String(e)
@@ -118,6 +121,20 @@ export default async function FinansPage() {
           )}
         </section>
       </div>
+
+      {/* Til gennemsyn (spørge-loop): usikre/ukategoriserede posteringer */}
+      {reviewItems.length > 0 && (
+        <section className="card fin-block review-card">
+          <div className="card-head">
+            <div className="sect"><span className="no">!</span><span className="ttl">Til gennemsyn</span></div>
+            <span className="tag num">{reviewItems.length} usikre</span>
+          </div>
+          <p className="review-hint">
+            Vælg en kategori, så lærer OS&apos;en forretningen og retter lignende posteringer automatisk.
+          </p>
+          <FinanceTransactions items={reviewItems} />
+        </section>
+      )}
 
       {/* Manuelle balancer */}
       <section className="card fin-block">

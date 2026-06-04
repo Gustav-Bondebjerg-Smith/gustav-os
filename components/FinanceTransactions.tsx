@@ -30,6 +30,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
   const router = useRouter()
   const [openId, setOpenId] = useState<string | null>(null)
   const [linesById, setLinesById] = useState<Record<string, TransactionLine[] | 'loading'>>({})
+  const [note, setNote] = useState<string | null>(null)
 
   async function toggle(t: Transaction) {
     if (openId === t.id) {
@@ -46,7 +47,8 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
 
   async function changeCategory(t: Transaction, category: string) {
     if (!isCategory(category)) return
-    await setCategoryAction(t.id, category, t.sin_tag)
+    const res = await setCategoryAction(t.id, category, t.sin_tag)
+    if (res.message) setNote(res.message)
     router.refresh()
   }
 
@@ -54,6 +56,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
 
   return (
     <div className="txl">
+      {note && <p className="txl-note">{note}</p>}
       {items.map((t) => {
         const hasReceipt = !!t.storebox_receipt_id
         const isOpen = openId === t.id

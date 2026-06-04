@@ -9,7 +9,18 @@
 // IKKE selv et sin_tag - synderne ligger på linjerne (ingen dobbelttælling).
 import 'server-only'
 import { getSupabase } from './supabase'
-import { isCategory, isSinTag, type Category, type SinTag } from './finance-shared'
+import { saveMemory, recallForScope } from './memory-facts'
+import {
+  isCategory,
+  isSinTag,
+  merchantToken,
+  parseFinanceRule,
+  formatFinanceRule,
+  type Category,
+  type SinTag,
+} from './finance-shared'
+
+const FINANCE_SCOPE = 'finance'
 
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -117,8 +128,8 @@ function extractJsonArray(raw: string): unknown {
   throw new Error('ubalanceret JSON-array i svar')
 }
 
-type ClassOut = { category: Category; sin: SinTag | null }
-type RawClass = { i?: number; category?: string; sin?: string | null }
+type ClassOut = { category: Category; sin: SinTag | null; confidence: 'high' | 'low' }
+type RawClass = { i?: number; category?: string; sin?: string | null; confidence?: string }
 
 function coerce(arr: RawClass[], n: number, fallback: Category): ClassOut[] {
   const byI = new Map<number, RawClass>()
@@ -129,6 +140,7 @@ function coerce(arr: RawClass[], n: number, fallback: Category): ClassOut[] {
     out.push({
       category: isCategory(a?.category) ? (a!.category as Category) : fallback,
       sin: isSinTag(a?.sin) ? (a!.sin as SinTag) : null,
+      confidence: a?.confidence === 'low' ? 'low' : 'high',
     })
   }
   return out
@@ -140,7 +152,7 @@ const TX_SYSTEM = [
   'Du kategoriserer danske bank-posteringer for Gustav (medicinstuderende, Odense).',
   'Hver postering: text (kort), detail (forretning/by), amount (negativ=udgift, positiv=indkomst).',
   'Returnér KUN et JSON-array, ét objekt pr. input i SAMME rækkefølge:',
-  '[{"i":0,"category":"dagligvarer","sin":null}]',
+  '[{"i":0,"category":"dagligvarer","sin":null,"confidence":"high"}]',
   'category er PRÆCIS én af: dagligvarer, ude, transport, bolig, abonnement, helbred, studie, opsparing, indkomst, andet.',
   '- dagligvarer: supermarked (Netto, Føtex, MENY, Rema, Lidl, Aldi, Bilka, SPAR).',
   '- ude: restaurant, cafe, takeaway, bar, fastfood, bodega, kiosk-mad.',
@@ -157,6 +169,7 @@ const TX_SYSTEM = [
   '- alkohol: bar, vinhandel, alkohol.',
   '- spil: betting, casino, lotto, Danske Spil, Unibet.',
   'Sæt KUN sin når posteringen TYDELIGT er en synd. Ellers null. De fleste posteringer har sin=null.',
+  'confidence: "low" hvis du er i reel tvivl om kategorien (ukendt eller tvetydig forretning), ellers "high".',
 ].join('\n')
 
 async function classifyTransactionsBatch(
@@ -195,8 +208,40 @@ export async function classifyUnmatchedTransactions(
     if (page.length < PAGE) break
   }
 
-  const batches = chunk(rows, batchSize)
+  // Anvend lærte regler FØRST: kendte forretninger kategoriseres deterministisk
+  // (ingen AI), så systemet bliver klogere af Gustavs tidligere rettelser.
+  const rules = await loadFinanceRules()
+  const ruleHits: { row: TxRow; category: Category; sin: SinTag | null }[] = []
+  const aiRows: TxRow[] = []
+  for (const r of rows) {
+    const rule = rules.get(merchantToken(r.text_raw))
+    if (rule) ruleHits.push({ row: r, category: rule.category, sin: rule.sin })
+    else aiRows.push(r)
+  }
+
   let classified = 0
+
+  // Regel-ramte posteringer: deterministisk update.
+  for (const slice of chunk(ruleHits, 200)) {
+    await Promise.all(
+      slice.map((h) =>
+        sb
+          .from('transactions')
+          .update({
+            category: h.category,
+            sin_tag: h.sin,
+            category_source: 'rule',
+            status: 'classified',
+            updated_at: nowIso(),
+          })
+          .eq('id', h.row.id),
+      ),
+    )
+    classified += slice.length
+  }
+
+  // Resten: AI med konfidens. Lav konfidens -> needs_review (spørge-loop).
+  const batches = chunk(aiRows, batchSize)
   await mapWithConcurrency(batches, opts.concurrency ?? 5, async (batch) => {
     try {
       const cls = await classifyTransactionsBatch(
@@ -210,7 +255,7 @@ export async function classifyUnmatchedTransactions(
               category: cls[i].category,
               sin_tag: cls[i].sin,
               category_source: 'ai',
-              status: 'classified',
+              status: cls[i].confidence === 'low' ? 'needs_review' : 'classified',
               updated_at: nowIso(),
             })
             .eq('id', r.id),
@@ -224,6 +269,39 @@ export async function classifyUnmatchedTransactions(
     }
   })
   return classified
+}
+
+// Lærte regler: forretnings-nøgle -> {category, sin}, fra memory_facts (scope
+// 'finance'). Finance-scope er lille -> recallForScope loader alt. Fejler blødt.
+export async function loadFinanceRules(): Promise<Map<string, { category: Category; sin: SinTag | null }>> {
+  const map = new Map<string, { category: Category; sin: SinTag | null }>()
+  try {
+    const res = await recallForScope(FINANCE_SCOPE)
+    if (res.mode !== 'all') return map
+    for (const r of res.rows) {
+      const parsed = parseFinanceRule(r.content)
+      if (parsed.category) map.set(r.key, { category: parsed.category, sin: parsed.sin })
+    }
+  } catch (e) {
+    console.error('loadFinanceRules fejlede (tom fallback):', e)
+  }
+  return map
+}
+
+// Gem Gustavs rettelse som lært regel (memory_facts, upsert på scope+key).
+export async function saveFinanceRule(
+  token: string,
+  category: Category,
+  sin: SinTag | null,
+): Promise<void> {
+  if (!token) return
+  await saveMemory({
+    type: 'feedback',
+    scope: FINANCE_SCOPE,
+    key: token,
+    content: formatFinanceRule(category, sin),
+    why: 'Gustavs kategori-rettelse i finans-review',
+  })
 }
 
 // Matchede transaktioner = dagligvarekøb. Sæt kategori uden AI (synder ligger på
