@@ -446,3 +446,81 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .src-meta .sep { color: var(--color-ink-4); }
 .src-no { color: var(--color-accent); font-weight: 600; }
 .ask-src p { font-size: 13px; line-height: 1.5; color: var(--color-ink-2); }
+
+/* ============ Modul 4: Finans ============ */
+/* Forsidens finans-kort: gør nettoformue-toppen klikbar til /finans. */
+.fin-link { text-decoration: none; color: inherit; display: block; }
+.fin-link:hover .nw-value { color: var(--color-accent); transition: color .15s; }
+.swing .v { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+
+/* /finans side-layout */
+.fin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4); }
+@media (max-width: 760px) { .fin-grid { grid-template-columns: 1fr; } }
+.fin-block { margin-bottom: var(--space-4); }
+.nw-break { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-4); font-family: var(--font-mono); font-size: 12px; color: var(--color-ink-3); }
+.nw-break .pos { color: var(--color-pos); }
+.nw-break .neg { color: var(--color-neg); }
+
+/* Fælles mørke form-kontroller for finans */
+.mb input, .mb select, .mb-amt-in, .tx-cat, .upl input[type=file] {
+  background: var(--color-bg-2); border: 1px solid var(--color-border);
+  color: var(--color-ink-1); border-radius: var(--radius-xs);
+  font-family: var(--font-sans); font-size: 12.5px; padding: 6px 8px; outline: none;
+}
+.mb input:focus, .mb select:focus, .tx-cat:focus { border-color: var(--color-accent-line); }
+
+/* Manuelle balancer */
+.mb-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--space-4); }
+.mb-row { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 10px; }
+.mb-kind { font-family: var(--font-mono); font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--color-border); color: var(--color-ink-3); white-space: nowrap; }
+.mb-kind.asset { color: var(--color-pos); border-color: rgba(84, 217, 140, .3); }
+.mb-kind.liability { color: var(--color-neg); border-color: var(--color-neg-line); }
+.mb-label { font-size: 13.5px; color: var(--color-ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mb-amt { font-family: var(--font-mono); font-size: 13.5px; color: var(--color-ink-1); text-align: right; white-space: nowrap; }
+.mb-amt.neg { color: var(--color-neg); }
+.add-row.mb-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.add-row.mb-add input { flex: 1; min-width: 120px; }
+.mb-amt-in { flex: 0 0 110px !important; min-width: 90px !important; text-align: right; font-family: var(--font-mono); }
+.mb-add-btn, .upl-btn { background: var(--color-accent); color: #fff; border: none; border-radius: var(--radius-xs); padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mb-add-btn:hover, .upl-btn:hover { filter: brightness(1.12); }
+.mb-add-btn:disabled, .upl-btn:disabled { opacity: .5; cursor: default; filter: none; }
+
+/* Upload */
+.upl { display: flex; flex-direction: column; gap: 12px; }
+.upl-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.upl-lbl { display: flex; flex-direction: column; gap: 5px; }
+.upl-k { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--color-ink-3); }
+.upl-foot { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 2px; }
+.upl-link { background: none; border: none; color: var(--color-ink-3); cursor: pointer; font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; padding: 0; }
+.upl-link:hover { color: var(--color-ink-1); }
+.upl-link:disabled { opacity: .5; cursor: default; }
+.upl-msg { font-size: 12px; }
+
+/* Posteringsliste */
+.txl { display: flex; flex-direction: column; }
+.tx { border-bottom: 1px solid var(--color-border); }
+.tx:last-child { border-bottom: none; }
+.tx-main { display: grid; grid-template-columns: 22px 40px minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 8px 0; }
+.tx-exp { background: none; border: none; color: var(--color-ink-3); cursor: pointer; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; }
+.tx-exp:hover:not(:disabled) { color: var(--color-ink-1); }
+.tx-exp:disabled { cursor: default; }
+.tx-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--color-ink-4); }
+.tx-date { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-ink-3); white-space: nowrap; }
+.tx-text { font-size: 13px; color: var(--color-ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tx-recpt { color: var(--color-accent); flex: none; }
+.tx-tags { display: flex; gap: 5px; }
+.tx-cat { font-size: 11px; max-width: 130px; }
+.tx-amt { font-family: var(--font-mono); font-size: 13px; text-align: right; white-space: nowrap; }
+.tx-amt.neg { color: var(--color-neg); }
+.tx-amt.pos { color: var(--color-pos); }
+.tx-lines { padding: 2px 0 12px 32px; display: flex; flex-direction: column; gap: 6px; }
+.txln { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 9px; align-items: center; }
+.txln-name { font-size: 12.5px; color: var(--color-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.txln-amt { font-family: var(--font-mono); font-size: 12px; color: var(--color-ink-3); text-align: right; white-space: nowrap; }
+.pill.sin { color: var(--color-neg); border-color: var(--color-neg-line); }
+.pill.sin.sm { font-size: 8px; padding: 1px 6px; }
+@media (max-width: 620px) {
+  .tx-main { grid-template-columns: 22px 1fr auto; row-gap: 4px; }
+  .tx-date { display: none; }
+  .tx-cat { grid-column: 2; max-width: 100%; }
+}

@@ -37,6 +37,14 @@ yarn-error.log*
 # personlige nøgle-backups (ligger uden for repoet, men ignoreres hvis de flyttes ind)
 API.txt
 
+# personlige finans-data (rigtige bank-CSV + Storebox-eksport). Kanonisk placering
+# er UDEN FOR repoet: ../gustav-os-private/finans/. Dette er et sikkerhedsnet hvis de
+# ved en fejl havner inde i repoet - rigtige finans-data må ALDRIG committes.
+# (Anonymiserede test-fixtures tilføjes bevidst med `git add -f`.)
+/private/
+/finans-data/
+*.csv
+
 # vercel
 .vercel
 

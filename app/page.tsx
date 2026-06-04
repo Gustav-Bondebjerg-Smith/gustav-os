@@ -1,27 +1,22 @@
-// "I dag" - bento-forside (Claude Design struct D). Tidslinjen (getEvents),
-// Dagens opgaver (listTasks) og Mål (listGoals) er RIGTIGE data. Finans er
-// placeholder indtil Modul 4 wirer bank/Storebox-queries.
+// "I dag" - bento-forside (Claude Design struct D). Alle kort er RIGTIGE data:
+// tidslinjen (getEvents), opgaver (listTasks), mål (listGoals) og finans
+// (getNetWorth + getSinSummary fra bank-CSV + Storebox).
 import Link from 'next/link'
 import { getEvents, type GoogleCalendarEvent } from '@/lib/calendar'
 import { startOfTodayCph, endOfTodayCph, isPastDayCph } from '@/lib/format'
 import { listTasks, type Task } from '@/lib/tasks'
 import { listGoals, SCOPES, SCOPE_LABEL, type Goal } from '@/lib/goals'
+import { getNetWorth, getSinSummary, SIN_LABEL, type NetWorth, type SinSummary } from '@/lib/finance'
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
 import { Check, AlertTriangle } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
 
-const kr = (n: number) => n.toLocaleString('da-DK') + ' kr'
+const kr = (n: number) => Math.round(n).toLocaleString('da-DK') + ' kr'
+const fmt = (n: number) => Math.round(n).toLocaleString('da-DK')
+const signed = (n: number) => (n >= 0 ? '+' : '-') + fmt(Math.abs(n)) + ' kr'
 
-const SPARK = [30, 28, 33, 31, 36, 34, 40, 38, 44, 42, 48, 46, 52, 49, 55, 58, 62, 60, 66, 70, 74, 78, 90, 100]
-const SINS = [
-  { cat: 'Takeaway', amt: 640 },
-  { cat: 'Snacks & slik', amt: 240 },
-  { cat: 'Spil', amt: 200 },
-  { cat: 'Sodavand', amt: 180 },
-  { cat: 'Energidrik', amt: 110 },
-]
 function hhmmCph(iso?: string | null): string {
   if (!iso) return ''
   return new Intl.DateTimeFormat('da-DK', {
@@ -66,6 +61,19 @@ export default async function HomePage() {
     /* tomt mål-kort hvis hentning fejler */
   }
 
+  // Finans-kort: nettoformue (fra bank-saldo) + denne måneds synder. Rigtige tal.
+  // Må aldrig fejle forsiden.
+  let nw: NetWorth | null = null
+  let sins: SinSummary[] = []
+  try {
+    nw = await getNetWorth()
+    sins = await getSinSummary()
+  } catch {
+    /* tomt finans-kort hvis hentning fejler */
+  }
+  const sinTotal = sins.reduce((a, s) => a + s.amount, 0)
+  const sinMax = Math.max(...sins.map((s) => s.amount), 1)
+
   const isOngoing = (ev: GoogleCalendarEvent) =>
     !!ev.start?.dateTime && !!ev.end?.dateTime &&
     new Date(ev.start.dateTime) <= now && now < new Date(ev.end.dateTime)
@@ -73,10 +81,6 @@ export default async function HomePage() {
   const firstUpcomingId = events.find(
     (ev) => ev.start?.dateTime && new Date(ev.start.dateTime) > now,
   )?.id
-
-  const sinMax = Math.max(...SINS.map((s) => s.amt), 1)
-  const sinTotal = SINS.reduce((a, s) => a + s.amt, 0)
-  const sortedSins = [...SINS].sort((a, b) => b.amt - a.amt)
 
   return (
     <div className="grid" data-struct="D">
@@ -110,42 +114,48 @@ export default async function HomePage() {
       {/* 02 SESSION (klient: levende ur + capture) */}
       <SessionCard />
 
-      {/* 03 FINANS (placeholder indtil modul 4) */}
+      {/* 03 FINANS (rigtige tal fra bank-CSV + Storebox) */}
       <Card id="finans" no="03" title="Finans" tag={<span className="tag live">Live</span>}>
-        <div className="fin-top">
-          <div>
-            <div className="nw-label">Nettoformue</div>
-            <div className="nw-value num">48.250<span className="unit">kr</span></div>
-          </div>
-          <div className="swings">
-            <div className="swing"><div className="k">I dag</div><div className="v pos num">+120 kr</div></div>
-            <div className="swing"><div className="k">Denne måned</div><div className="v pos num">+1.840 kr</div></div>
-          </div>
-        </div>
-        <div className="fin-spark-lbl"><span>Nettoformue · 24 mdr</span><span className="num">+58%</span></div>
-        <div className="fin-spark" aria-hidden="true">
-          {SPARK.map((v, i) => (
-            <span key={i} className="bar" style={{ height: `${v}%` }} />
-          ))}
-        </div>
-        <div className="sin">
-          <div className="sin-head">
-            <span className="l">
-              <AlertTriangle size={14} aria-hidden="true" /> Syndeudgifter · denne måned
-              <span className="sin-warn-dot" />
-            </span>
-            <span className="sin-total num">{kr(sinTotal)}</span>
-          </div>
-          <div className="sin-rows">
-            {sortedSins.map((s) => (
-              <div className="sin-row" key={s.cat}>
-                <span className="cat">{s.cat}</span>
-                <span className="track"><span className="fill" style={{ width: `${Math.round((s.amt / sinMax) * 100)}%` }} /></span>
-                <span className="amt num">{kr(s.amt)}</span>
+        {nw ? (
+          <>
+            <Link className="fin-link" href="/finans">
+              <div className="fin-top">
+                <div>
+                  <div className="nw-label">Nettoformue</div>
+                  <div className="nw-value num">{fmt(nw.netWorth)}<span className="unit">kr</span></div>
+                </div>
+                <div className="swings">
+                  <div className="swing"><div className="k">I dag</div><div className={`v num ${nw.daySwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.daySwing)}</div></div>
+                  <div className="swing"><div className="k">Denne måned</div><div className={`v num ${nw.monthSwing >= 0 ? 'pos' : 'neg'}`}>{signed(nw.monthSwing)}</div></div>
+                </div>
               </div>
-            ))}
-          </div>
-        </div>
+            </Link>
+            <div className="sin">
+              <div className="sin-head">
+                <span className="l">
+                  <AlertTriangle size={14} aria-hidden="true" /> Syndeudgifter · denne måned
+                  {sins.length > 0 && <span className="sin-warn-dot" />}
+                </span>
+                <span className="sin-total num">{kr(sinTotal)}</span>
+              </div>
+              {sins.length === 0 ? (
+                <p className="empty">Ingen synder registreret denne måned.</p>
+              ) : (
+                <div className="sin-rows">
+                  {sins.slice(0, 5).map((s) => (
+                    <div className="sin-row" key={s.tag}>
+                      <span className="cat">{SIN_LABEL[s.tag]}</span>
+                      <span className="track"><span className="fill" style={{ width: `${Math.round((s.amount / sinMax) * 100)}%` }} /></span>
+                      <span className="amt num">{kr(s.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="empty">Finans-data ikke tilgængelig endnu.</p>
+        )}
       </Card>
 
       {/* 04 DAGENS OPGAVER (rigtige opgaver fra boardet) */}
