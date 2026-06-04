@@ -5,7 +5,7 @@ import { getSupabase } from './supabase'
 import { ask } from './ask'
 import { fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
 import { storeChunk } from './memory'
-import { getEvents, insertEvent, updateEvent, type GoogleCalendarEvent } from './calendar'
+import { getEvents, insertEvent, updateEvent, deleteEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
@@ -843,35 +843,22 @@ function formatCandidates(candidates: CandidateSummary[]): string {
   return 'Det jeg så i kalenderen:\n' + lines.join('\n')
 }
 
-function formatProposal(p: CalendarProposal, vetoMinutes = 10): string {
-  // p.start/end er naive CPH-strenge fra Haiku ("2026-05-29T14:00:00").
-  // Suffix med korrekt offset for at få fmtRange/fmtDay til at vise CPH-tid
-  // korrekt selv på Vercel (UTC).
+// Bekræftelse efter at en aftale er skrevet STRAKS i kalenderen (ingen veto).
+// p.start/end er naive CPH-strenge fra Haiku; suffix med CPH-offset så fmtDay/
+// fmtRange viser korrekt tid selv på Vercel (UTC).
+function formatInsertDone(p: CalendarProposal, htmlLink?: string): string {
   const sIso = withCphOffset(p.start)
   const eIso = withCphOffset(p.end)
-  const day = fmtDay(sIso)
-  const range = fmtRange(sIso, eIso)
   const loc = p.location ? `\nSted: ${p.location}` : ''
-  return [
-    `Forslag: ${p.summary}`,
-    `Tid: ${day} kl. ${range}${loc}`,
-    '',
-    `Skriv "nej" inden ${vetoMinutes} min for at vetoe. Ellers skriver jeg den i kalenderen.`,
-  ].join('\n')
+  const link = htmlLink ? `\n${htmlLink}` : ''
+  return `✅ Lagt i kalenderen: ${p.summary}\nTid: ${fmtDay(sIso)} kl. ${fmtRange(sIso, eIso)}${loc}${link}`
 }
 
-// Slet-forslag. p.start/end kommer fra Google (absolute ISO med offset),
-// så vi kan bruge fmtRange direkte uden offset-suffix.
-function formatDeletion(p: CalendarDeletion, vetoMinutes = 10): string {
-  const day = fmtDay(p.start)
-  const range = fmtRange(p.start, p.end)
+// Bekræftelse efter STRAKS-sletning. p.start/end kommer fra Google (absolut ISO),
+// så fmtRange/fmtDay bruges direkte uden offset-suffix.
+function formatDeletionDone(p: CalendarDeletion): string {
   const loc = p.location ? `\nSted: ${p.location}` : ''
-  return [
-    `Slet: ${p.summary}`,
-    `Tid: ${day} kl. ${range}${loc}`,
-    '',
-    `Skriv "nej" inden ${vetoMinutes} min for at vetoe. Ellers slettes den fra kalenderen.`,
-  ].join('\n')
+  return `🗑️ Slettet fra kalenderen: ${p.summary}\nTid: ${fmtDay(p.start)} kl. ${fmtRange(p.start, p.end)}${loc}`
 }
 
 // Vedhæfter Europe/Copenhagen-offset til en naive datetime-streng som
@@ -1023,30 +1010,35 @@ async function handleCapture(
   // To grene: slet-intent (fjerner en eksisterende aftale) eller aftale-intent
   // (opretter en ny). Slet-intent har forrang, fordi en besked som "slet
   // aftalen med skat" ofte klassificeres som aftale.
-  const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
-  const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
-
+  // INGEN veto længere: kalender-handlinger udføres STRAKS (Gustavs valg
+  // 2026-06-04). En fejl-skrivning kan altid rettes bagefter med "slet X" / "ret X".
   if (opts.forceDelete || hasDeleteIntent(content)) {
     let attempt: DeleteAttempt = { match: null, candidates: [], reason: 'flow fejlede' }
     try {
       attempt = await proposeCalendarDelete(content)
     } catch (e) {
-      console.error('delete-forslag fejlede (ikke kritisk):', e)
+      console.error('slet-match fejlede (ikke kritisk):', e)
     }
     if (attempt.match) {
+      const m = attempt.match
       try {
-        const sent = await sendMessage(msg.chat.id, formatDeletion(attempt.match, vetoMinutes))
-        const { error: actErr } = await sb.from('actions').insert({
-          type: 'calendar_delete',
-          payload: attempt.match,
-          source_capture_id: captureId,
-          telegram_message_id: sent.message_id,
-          veto_deadline: deadlineIso,
+        await deleteEvent(m.event_id)
+        await sb.from('audit_log').insert({
+          action: 'calendar_delete',
+          payload: { ...m, deleted: true },
+          status: 'applied',
+          reason: 'slettet straks (ingen veto)',
         })
-        if (actErr) console.error('delete-forslag kunne ikke gemmes som action:', actErr.message)
+        await sendMessage(msg.chat.id, formatDeletionDone(m))
       } catch (e) {
-        console.error('delete-proposal-besked kunne ikke sendes:', e)
-        await sendMessage(msg.chat.id, reply)
+        const err = e instanceof Error ? e.message : String(e)
+        await sb.from('audit_log').insert({
+          action: 'calendar_delete',
+          payload: m,
+          status: 'failed',
+          reason: err,
+        })
+        await sendMessage(msg.chat.id, `Kunne ikke slette "${m.summary}" fra kalenderen: ${err}`)
       }
       return { status: 'processed', reason: 'capture_saved_with_delete' }
     }
@@ -1066,24 +1058,29 @@ async function handleCapture(
     try {
       proposal = await proposeCalendarEvent(content)
     } catch (e) {
-      console.error('forslag fejlede (ikke kritisk):', e)
+      console.error('aftale-udledning fejlede (ikke kritisk):', e)
     }
   }
 
   if (proposal) {
     try {
-      const sent = await sendMessage(msg.chat.id, formatProposal(proposal, vetoMinutes))
-      const { error: actErr } = await sb.from('actions').insert({
-        type: 'calendar_insert',
-        payload: proposal,
-        source_capture_id: captureId,
-        telegram_message_id: sent.message_id,
-        veto_deadline: deadlineIso,
+      const event = await insertEvent(proposal)
+      await sb.from('audit_log').insert({
+        action: 'calendar_insert',
+        payload: { ...proposal, event_id: event.id, html_link: event.htmlLink },
+        status: 'applied',
+        reason: 'skrevet straks (ingen veto)',
       })
-      if (actErr) console.error('forslag kunne ikke gemmes som action:', actErr.message)
+      await sendMessage(msg.chat.id, formatInsertDone(proposal, event.htmlLink))
     } catch (e) {
-      console.error('proposal-besked kunne ikke sendes:', e)
-      await sendMessage(msg.chat.id, reply)
+      const err = e instanceof Error ? e.message : String(e)
+      await sb.from('audit_log').insert({
+        action: 'calendar_insert',
+        payload: proposal,
+        status: 'failed',
+        reason: err,
+      })
+      await sendMessage(msg.chat.id, `Kunne ikke skrive "${proposal.summary}" i kalenderen: ${err}`)
     }
   } else {
     await sendMessage(msg.chat.id, reply)
@@ -1562,8 +1559,8 @@ async function handleActivityStop(msg: TelegramMessage): Promise<HandleResult> {
 // (regex + triage + double-gate), ikke eksekveringen.
 
 // create_event: routeren giver eksplicitte slots (summary/start/end), så vi går
-// uden om proposeCalendarEvent og bygger forslaget direkte. Samme action+veto-
-// flow som den normale aftale-gren i handleCapture.
+// uden om proposeCalendarEvent og bygger aftalen direkte. Skriver straks i
+// kalenderen (ingen veto), som aftale-grenen i handleCapture.
 async function handleAgentCreate(
   msg: TelegramMessage,
   input: Record<string, unknown>
@@ -1580,24 +1577,27 @@ async function handleAgentCreate(
   }
 
   const proposal: CalendarProposal = { summary, start, end }
-  const vetoMinutes = Number(process.env.VETO_MINUTES) || 10
-  const deadlineIso = new Date(Date.now() + vetoMinutes * 60 * 1000).toISOString()
+  const sb = getSupabase()
   try {
-    const sent = await sendMessage(msg.chat.id, formatProposal(proposal, vetoMinutes))
-    const sb = getSupabase()
-    const { error: actErr } = await sb.from('actions').insert({
-      type: 'calendar_insert',
-      payload: proposal,
-      source_capture_id: null,
-      telegram_message_id: sent.message_id,
-      veto_deadline: deadlineIso,
+    const event = await insertEvent(proposal)
+    await sb.from('audit_log').insert({
+      action: 'calendar_insert',
+      payload: { ...proposal, event_id: event.id, html_link: event.htmlLink },
+      status: 'applied',
+      reason: 'agent create: skrevet straks (ingen veto)',
     })
-    if (actErr) console.error('agent create: action kunne ikke gemmes:', actErr.message)
+    await sendMessage(msg.chat.id, formatInsertDone(proposal, event.htmlLink))
   } catch (e) {
-    console.error('agent create: proposal-besked fejlede:', e)
-    await sendMessage(msg.chat.id, 'Kunne ikke sende kalender-forslaget lige nu.')
+    const err = e instanceof Error ? e.message : String(e)
+    await sb.from('audit_log').insert({
+      action: 'calendar_insert',
+      payload: proposal,
+      status: 'failed',
+      reason: err,
+    })
+    await sendMessage(msg.chat.id, `Kunne ikke skrive "${proposal.summary}" i kalenderen: ${err}`)
   }
-  return { status: 'processed', reason: 'agent_create_proposed' }
+  return { status: 'processed', reason: 'agent_create_done' }
 }
 
 // Kort-tids samtale-hukommelse for routeren. Når routeren stiller et afklarende

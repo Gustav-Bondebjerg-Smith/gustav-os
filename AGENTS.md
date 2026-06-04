@@ -55,7 +55,7 @@ Gustav OS er et personligt AI operating system. Det er en hobby-build Gustav sel
 - Dansk. Direkte og udfordrende. Kalder ham på undvigelse og perfektionisme.
 - Ankr mod realistiske benchmarks, ikke outliers.
 - Afvis "doven / ikke god med mennesker / mangler agency", reframe til "reaktiv, arbejder på proaktiv".
-- Proaktiv: briefings, påmindelser, flag når mønstre skrider. Auto-handlinger har altid Telegram-veto.
+- Proaktiv: briefings, påmindelser, flag når mønstre skrider. Auto-handlinger (kalender skriv/slet/ret) udføres STRAKS uden veto (Gustavs valg 2026-06-04). Det gamle 10-minutters veto-vindue er fjernet. En fejl rettes bagefter med "slet X"/"ret X" på Telegram. (Veto-ord som "nej"/"stop" routes stadig til `handleVeto`, men der er normalt intet at vetoe længere.)
 
 ## Sikkerhed og data
 - Secrets kun i `.env.local` (gitignored). Committes aldrig.
