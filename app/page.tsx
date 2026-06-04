@@ -1,8 +1,11 @@
-// "I dag" - bento-forside (Claude Design struct D). Tidslinjen er RIGTIG
-// kalenderdata (getEvents). Finans/Opgaver/Mål er placeholder-data tro mod
-// prototypen, indtil deres moduler (2-4) wirer rigtige queries.
+// "I dag" - bento-forside (Claude Design struct D). Tidslinjen (getEvents),
+// Dagens opgaver (listTasks) og Mål (listGoals) er RIGTIGE data. Finans er
+// placeholder indtil Modul 4 wirer bank/Storebox-queries.
+import Link from 'next/link'
 import { getEvents, type GoogleCalendarEvent } from '@/lib/calendar'
-import { startOfTodayCph, endOfTodayCph } from '@/lib/format'
+import { startOfTodayCph, endOfTodayCph, isPastDayCph } from '@/lib/format'
+import { listTasks, type Task } from '@/lib/tasks'
+import { listGoals, SCOPES, SCOPE_LABEL, type Goal } from '@/lib/goals'
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
 import { Check, AlertTriangle } from 'lucide-react'
@@ -11,11 +14,6 @@ export const dynamic = 'force-dynamic'
 
 const kr = (n: number) => n.toLocaleString('da-DK') + ' kr'
 
-const PLACEHOLDER_TASKS: { title: string; pills: { t: string; c: string }[] }[] = [
-  { title: 'Læs farmakologi kap. 7 — interaktioner', pills: [{ t: 'I dag', c: 'today' }, { t: 'Vigtig', c: 'vigtig' }] },
-  { title: 'Send timeseddel til Herlev', pills: [{ t: 'I dag', c: 'today' }] },
-  { title: 'Book studiegruppe-lokale', pills: [{ t: 'Denne uge', c: 'week' }] },
-]
 const SPARK = [30, 28, 33, 31, 36, 34, 40, 38, 44, 42, 48, 46, 52, 49, 55, 58, 62, 60, 66, 70, 74, 78, 90, 100]
 const SINS = [
   { cat: 'Takeaway', amt: 640 },
@@ -24,11 +22,6 @@ const SINS = [
   { cat: 'Sodavand', amt: 180 },
   { cat: 'Energidrik', amt: 110 },
 ]
-const GOAL_GROUPS: { label: string; goals: { name: string; val: string; pct: number }[] }[] = [
-  { label: 'Denne uge', goals: [{ name: 'Træn', val: '2 / 3', pct: 66 }, { name: 'Aflever metode-afsnit', val: 'i gang', pct: 40 }] },
-  { label: 'Denne måned', goals: [{ name: 'Spar op', val: '1.840 / 2.000 kr', pct: 92 }, { name: 'Læs fagbøger færdig', val: '1 / 2', pct: 50 }] },
-]
-
 function hhmmCph(iso?: string | null): string {
   if (!iso) return ''
   return new Intl.DateTimeFormat('da-DK', {
@@ -48,6 +41,29 @@ export default async function HomePage() {
     events = await getEvents(startOfTodayCph(), endOfTodayCph())
   } catch (e) {
     calendarError = e instanceof Error ? e.message : String(e)
+  }
+
+  // Dagens opgaver: åbne opgaver der enten haster i dag eller er markeret vigtige.
+  // Top 3 efter board-sorteringen (vigtig > prioritet). Forsiden må aldrig fejle
+  // på dette - tom liste ved fejl.
+  let dayTasks: Task[] = []
+  let dayTaskTotal = 0
+  try {
+    const open = await listTasks()
+    const today = open.filter((t) => t.urgency === 'today' || t.key)
+    dayTaskTotal = today.length
+    dayTasks = today.slice(0, 3)
+  } catch {
+    /* forsiden viser bare tomt opgavekort hvis hentning fejler */
+  }
+
+  // Mål grupperet på scope (uge/måned). Forsiden viser dem read-only; redigering
+  // sker på /maal. Må heller ikke fejle forsiden.
+  let goals: Goal[] = []
+  try {
+    goals = await listGoals()
+  } catch {
+    /* tomt mål-kort hvis hentning fejler */
   }
 
   const isOngoing = (ev: GoogleCalendarEvent) =>
@@ -132,23 +148,31 @@ export default async function HomePage() {
         </div>
       </Card>
 
-      {/* 04 DAGENS OPGAVER (placeholder indtil modul 2) */}
-      <Card id="opgaver" no="04" title="Dagens opgaver" tag={<span className="tag">3 i dag</span>}>
-        <div className="tasks">
-          {PLACEHOLDER_TASKS.map((t) => (
-            <div className="task" key={t.title}>
-              <span className="check"><Check aria-hidden="true" /></span>
-              <div className="t-body">
-                <div className="t-title">{t.title}</div>
-                <div className="t-meta">
-                  {t.pills.map((p) => (
-                    <span className={`pill ${p.c}`} key={p.t}>{p.t}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+      {/* 04 DAGENS OPGAVER (rigtige opgaver fra boardet) */}
+      <Card id="opgaver" no="04" title="Dagens opgaver" tag={<span className="tag">{dayTaskTotal} i dag</span>}>
+        {dayTasks.length === 0 ? (
+          <p className="empty">Ingen opgaver i dag. Sig til OS&apos;en hvad du skal nå.</p>
+        ) : (
+          <div className="tasks">
+            {dayTasks.map((t) => {
+              const overdue = isPastDayCph(t.due_date)
+              return (
+                <Link className="task" href="/opgaver" key={t.id}>
+                  <span className="check"><Check aria-hidden="true" /></span>
+                  <div className="t-body">
+                    <div className="t-title">{t.title}</div>
+                    <div className="t-meta">
+                      {t.urgency === 'today' ? <span className="pill today">I dag</span> : null}
+                      {t.key ? <span className="pill vigtig">Vigtig</span> : null}
+                      {overdue ? <span className="pill over">Forsinket</span> : null}
+                      {t.area ? <span className={`pill area-${t.area}`}>{t.area}</span> : null}
+                    </div>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
       </Card>
 
       {/* 05 I DAG (rigtig kalender) */}
@@ -184,24 +208,40 @@ export default async function HomePage() {
         )}
       </Card>
 
-      {/* 06 MÅL (placeholder indtil modul 3) */}
-      <Card id="maal" no="06" title="Mål">
-        <div className="goals">
-          {GOAL_GROUPS.map((g) => (
-            <div className="goal-grp" key={g.label}>
-              <div className="goal-lbl">{g.label}</div>
-              {g.goals.map((gl) => (
-                <div className="goal" key={gl.name}>
-                  <div className="goal-row">
-                    <span className="goal-name">{gl.name}</span>
-                    <span className="goal-val num">{gl.val}</span>
+      {/* 06 MÅL (rigtige mål fra boardet, read-only - rediger på /maal) */}
+      <Card
+        id="maal"
+        no="06"
+        title="Mål"
+        tag={goals.length > 0 ? <span className="tag">{goals.filter((g) => g.done).length}/{goals.length} klar</span> : undefined}
+      >
+        {goals.length === 0 ? (
+          <p className="empty">Ingen mål endnu. Sæt uge- og måneds-mål på Mål-fanen.</p>
+        ) : (
+          <div className="goals">
+            {SCOPES.map((scope) => {
+              const groupGoals = goals.filter((g) => g.scope === scope)
+              const done = groupGoals.filter((g) => g.done).length
+              return (
+                <div className="goal-grp" key={scope}>
+                  <div className="goal-lbl">{SCOPE_LABEL[scope]} · {done}/{groupGoals.length}</div>
+                  <div className="goal-list">
+                    {groupGoals.length === 0 ? (
+                      <p className="empty">Ingen endnu.</p>
+                    ) : (
+                      groupGoals.map((g) => (
+                        <Link className={`fh-task ${g.done ? 'done' : ''}`} href="/maal" key={g.id}>
+                          <span className="fh-check"><Check aria-hidden="true" /></span>
+                          <span className="goal-text">{g.title}</span>
+                        </Link>
+                      ))
+                    )}
                   </div>
-                  <div className="bar"><div className="fill" style={{ width: `${gl.pct}%` }} /></div>
                 </div>
-              ))}
-            </div>
-          ))}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </Card>
     </div>
   )

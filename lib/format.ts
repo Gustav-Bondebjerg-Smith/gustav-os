@@ -67,6 +67,17 @@ export function fmtDay(iso: string | null | undefined): string {
   return `${WEEKDAYS[weekdayCph(iso)]} ${Number(pick(p, 'day'))}/${Number(pick(p, 'month'))}`
 }
 
+// True hvis iso's kalenderdag (CPH) ligger FØR i dag (CPH). Til "forsinket"-
+// markering på opgaver: en deadline i går er overskredet, en deadline i dag er
+// ikke. YYYY-MM-DD sorterer leksikografisk = kronologisk, så streng-compare er nok.
+export function isPastDayCph(iso: string | null | undefined): boolean {
+  if (!iso) return false
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  return fmt.format(new Date(iso)) < fmt.format(new Date())
+}
+
 // Tjekker om iso ligger på samme kalenderdag som "i dag" i Copenhagen.
 export function isTodayCph(iso: string): boolean {
   const todayYmd = new Intl.DateTimeFormat('en-CA', {

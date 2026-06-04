@@ -303,6 +303,32 @@ body {
 @media (max-width: 860px) { .opg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .opg-grid { grid-template-columns: 1fr; } }
 
+/* Board-interaktioner: check som knap, flyt-vælger + slet pr. opgave, og
+   forsidens opgavekort hvor hele rækken linker til /opgaver. */
+button.check { padding: 0; font: inherit; cursor: pointer; }
+.task { cursor: default; }
+a.task { text-decoration: none; cursor: pointer; }
+.t-side { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.t-move { font-family: var(--font-mono); font-size: 10px; letter-spacing: .4px; color: var(--color-ink-2); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.t-move:hover { color: var(--color-ink-1); border-color: var(--color-border-2); }
+.t-del { display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--radius-sm); border: 1px solid transparent; background: none; color: var(--color-ink-4); cursor: pointer; transition: color .15s, border-color .15s; }
+.t-del:hover { color: var(--color-neg); border-color: var(--color-neg-line); }
+.t-del i, .t-del svg { width: 13px; height: 13px; }
+.board-foot { margin-top: var(--space-5); }
+.board-foot a { font-size: 13px; color: var(--color-ink-3); text-decoration: none; }
+.board-foot a:hover { color: var(--color-ink-1); }
+
+/* MÅL-board (Modul 3): to grupper, fh-task-checkbokse som knapper, tilføj/fjern.
+   Forsidens mål-kort genbruger .goal-list + .goal-text men som <a> (link). */
+.maal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(12px, 1.4vw, 18px); }
+@media (max-width: 720px) { .maal-grid { grid-template-columns: 1fr; } }
+.goal-list { display: flex; flex-direction: column; gap: 10px; }
+div.fh-task { cursor: default; }
+a.fh-task { text-decoration: none; cursor: pointer; }
+.goal-text { flex: 1; min-width: 0; }
+button.fh-check { padding: 0; background: none; cursor: pointer; }
+.add-row.goal-add { margin-top: 14px; margin-bottom: 0; }
+
 /* MÅL-fane */
 .focus-hero { margin-bottom: clamp(12px, 1.4vw, 18px); background: linear-gradient(120deg, var(--color-accent-dim), transparent 70%), var(--color-surface); }
 .fh-kick { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.8px; text-transform: uppercase; color: var(--color-accent); margin-bottom: 12px; }

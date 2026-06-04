@@ -1,17 +1,18 @@
-// Stub indtil Modul 2 (opgave-board). Holder fanen i nav'en uden 404.
+// Opgaver-fanen (Modul 2). Server-component henter åbne opgaver via service_role
+// og giver dem til board-klienten. Auth-gating sker i proxy/middleware; mutationer
+// auth-gater desuden selv i actions.ts.
+import { listTasks, type Task } from '@/lib/tasks'
+import { TaskBoard } from '@/components/TaskBoard'
+
 export const dynamic = 'force-dynamic'
 
-export default function OpgaverPage() {
-  return (
-    <div>
-      <div className="vhead">
-        <div className="vh-l"><span className="vh-no">01</span><span className="vh-ttl">Opgaver</span></div>
-        <span className="vh-sub">Bygges i modul 2</span>
-      </div>
-      <p className="empty">
-        Opgave-boardet er på vej: fire bunker (overskredet / i dag / denne uge / senere), filtre,
-        og automatisk fangst når du siger til OS&apos;en at du skal nå noget.
-      </p>
-    </div>
-  )
+export default async function OpgaverPage() {
+  let tasks: Task[] = []
+  let loadError: string | null = null
+  try {
+    tasks = await listTasks()
+  } catch (e) {
+    loadError = e instanceof Error ? e.message : String(e)
+  }
+  return <TaskBoard initialTasks={tasks} loadError={loadError} />
 }

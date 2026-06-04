@@ -5,6 +5,7 @@
 import { revalidatePath } from 'next/cache'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { saveCapture } from '@/lib/capture'
+import { URGENCY_LABEL } from '@/lib/tasks-shared'
 import type { CreateCaptureState } from './state'
 
 const MAX_LEN = 5000
@@ -50,7 +51,9 @@ export async function createCaptureAction(
     revalidatePath('/')
     const note = result.classifyError
       ? 'Gemt rå. Klassificering fejlede, prøv reclassify senere.'
-      : 'Gemt.'
+      : result.task
+        ? `Gemt som opgave (${URGENCY_LABEL[result.task.urgency]}).`
+        : 'Gemt.'
     return {
       ok: true,
       message: note,

@@ -1,16 +1,18 @@
-// Stub indtil Modul 3 (mål). Holder fanen i nav'en uden 404.
+// Mål-fanen (Modul 3). Server-component henter alle mål via service_role og giver
+// dem til board-klienten. Auth-gating sker i proxy/middleware; mutationer auth-
+// gater desuden selv i actions.ts.
+import { listGoals, type Goal } from '@/lib/goals'
+import { GoalsBoard } from '@/components/GoalsBoard'
+
 export const dynamic = 'force-dynamic'
 
-export default function MaalPage() {
-  return (
-    <div>
-      <div className="vhead">
-        <div className="vh-l"><span className="vh-no">02</span><span className="vh-ttl">Mål</span></div>
-        <span className="vh-sub">Bygges i modul 3</span>
-      </div>
-      <p className="empty">
-        Fokus-mål med delmål-checkliste + uge-, måneds- og semester-mål med fremdriftsbjælker.
-      </p>
-    </div>
-  )
+export default async function MaalPage() {
+  let goals: Goal[] = []
+  let loadError: string | null = null
+  try {
+    goals = await listGoals()
+  } catch (e) {
+    loadError = e instanceof Error ? e.message : String(e)
+  }
+  return <GoalsBoard initialGoals={goals} loadError={loadError} />
 }

@@ -7,6 +7,7 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { storeChunk } from './memory'
+import { createTaskFromCapture, type Task } from './tasks'
 
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -72,8 +73,10 @@ export type SaveCaptureResult = {
   id: string
   area: Area | null
   classification: Classification | null
+  task?: Task | null
   classifyError?: string
   embedError?: string
+  taskError?: string
 }
 
 // Gemmer en capture, klassificerer (best-effort), embedder (best-effort).
@@ -99,6 +102,8 @@ export async function saveCapture(input: {
   let area: Area | null = null
   let classifyError: string | undefined
   let embedError: string | undefined
+  let task: Task | null = null
+  let taskError: string | undefined
 
   try {
     classification = await classify(content)
@@ -110,6 +115,17 @@ export async function saveCapture(input: {
   } catch (e) {
     classifyError = e instanceof Error ? e.message : String(e)
     console.error('saveCapture: klassificering fejlede (ikke kritisk):', classifyError)
+  }
+
+  // Auto-fangst: er det en opgave, oprettes den prioriteret på boardet (best-
+  // effort - en fejl her må aldrig blokere selve capturen).
+  if (classification?.type === 'opgave') {
+    try {
+      task = await createTaskFromCapture({ text: content, area, sourceCaptureId: id })
+    } catch (e) {
+      taskError = e instanceof Error ? e.message : String(e)
+      console.error('saveCapture: opgave-oprettelse fejlede (ikke kritisk):', taskError)
+    }
   }
 
   try {
@@ -129,5 +145,5 @@ export async function saveCapture(input: {
     console.error('saveCapture: embed fejlede (ikke kritisk):', embedError)
   }
 
-  return { id, area, classification, classifyError, embedError }
+  return { id, area, classification, task, classifyError, embedError, taskError }
 }

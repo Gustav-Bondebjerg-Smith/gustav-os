@@ -7,6 +7,7 @@ import { fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
 import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, deleteEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
+import { createTaskFromCapture, URGENCY_LABEL, type Task } from './tasks'
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
 
@@ -955,6 +956,16 @@ async function handleAsk(msg: TelegramMessage): Promise<HandleResult> {
 // så transskriptionen kan løbe gennem intent-routingen før den ender her).
 // opts.forceDelete sættes når triagen har set en slet-intent i hverdagssprog,
 // hvor DELETE_INTENT-regexen nedenfor ikke ville ramme.
+// Bekræftelse når auto-fangsten har oprettet en opgave. Ingen veto/knapper -
+// hastighed justeres på dashboardets Opgaver-fane (kernekravet er auto-opret +
+// auto-prioritér, ikke en knap-flow i Telegram).
+function formatTaskCreated(t: Task, heard: string): string {
+  const bits = [URGENCY_LABEL[t.urgency]]
+  if (t.key) bits.push('vigtig')
+  const due = t.due_date ? `\nDeadline: ${fmtDay(t.due_date)}` : ''
+  return `${heard}✅ Opgave oprettet: ${t.title}\nPrioritet: ${bits.join(' · ')}${due}\nJustér på Opgaver-fanen.`
+}
+
 async function handleCapture(
   msg: TelegramMessage,
   content: string,
@@ -1081,6 +1092,16 @@ async function handleCapture(
         reason: err,
       })
       await sendMessage(msg.chat.id, `Kunne ikke skrive "${proposal.summary}" i kalenderen: ${err}`)
+    }
+  } else if (classification?.type === 'opgave') {
+    // Auto-fangst: opret + prioritér opgaven og bekræft. Best-effort - en fejl
+    // her falder tilbage til den almindelige "fanget og gemt"-kvittering.
+    try {
+      const task = await createTaskFromCapture({ text: content, area, sourceCaptureId: captureId })
+      await sendMessage(msg.chat.id, formatTaskCreated(task, heard))
+    } catch (e) {
+      console.error('opgave-oprettelse fejlede (ikke kritisk):', e)
+      await sendMessage(msg.chat.id, reply)
     }
   } else {
     await sendMessage(msg.chat.id, reply)
