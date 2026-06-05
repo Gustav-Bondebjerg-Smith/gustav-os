@@ -14,7 +14,6 @@ import { listGoals } from './goals'
 import { getWeeklyFinanceSummary } from './finance'
 import { sendTelegramMessage } from './telegram'
 import { storeChunk } from './memory'
-import { SIN_LABEL } from './finance-shared'
 import { URGENCY_LABEL } from './tasks-shared'
 
 const REVIEW_MODEL = 'claude-sonnet-4-6'
@@ -192,7 +191,7 @@ async function gather(weekStart: string): Promise<WeeklyReviewData & { openTitle
     finance: {
       netWorth: Math.round(finance.netWorth),
       weekSwing: Math.round(finance.weekSwing),
-      sins: finance.sins.map((s) => ({ label: SIN_LABEL[s.tag], amount: s.amount })),
+      sins: finance.sins.map((s) => ({ label: s.label, amount: s.amount })),
       // åbne opgave-titler bæres separat ud, ikke i den gemte data
     },
     openTitles,

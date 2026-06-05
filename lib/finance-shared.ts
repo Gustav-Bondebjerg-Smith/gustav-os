@@ -45,8 +45,12 @@ export type CategoryDef = { key: string; label: string; builtin: boolean }
 // varelinje kan have et sin_tag UDEN at det ændrer kategorien (fx alkohol-linje i
 // et dagligvarekøb).
 export const SIN_TAGS = ['takeaway', 'alkohol', 'spil', 'sodavand', 'energidrik', 'snacks'] as const
-export type SinTag = (typeof SIN_TAGS)[number]
-export const SIN_LABEL: Record<SinTag, string> = {
+// SinTag er IKKE laengere en lukket union: Gustav kan tilfoeje egne synder (gemt i
+// memory_facts, scope 'finance_sin' - se lib/finance-sins.ts). Valideres i RUNTIME mod
+// den merged liste, ikke i typen. De faste noegler bliver staaende i SIN_TAGS (AI + data
+// peger paa dem). Spejler hvordan Category blev loesnet til string.
+export type SinTag = string
+export const SIN_LABEL: Record<string, string> = {
   takeaway: 'Takeaway',
   alkohol: 'Alkohol',
   spil: 'Spil',
@@ -54,9 +58,14 @@ export const SIN_LABEL: Record<SinTag, string> = {
   energidrik: 'Energidrik',
   snacks: 'Snacks & slik',
 }
+// KUN de FASTE synder (bruges hvor built-in-semantik er noedvendig). Brugerdefinerede
+// synder valideres mod loadSins(), ikke her.
 export function isSinTag(v: unknown): v is SinTag {
   return typeof v === 'string' && (SIN_TAGS as readonly string[]).includes(v)
 }
+// En synd i UI'et: noegle + visningsnavn + om den er fast (kan ikke slettes). Spejler
+// CategoryDef. Bygges server-side (faste + Gustavs egne) og sendes som prop til selects.
+export type SinDef = { key: string; label: string; builtin: boolean }
 
 export type TransactionStatus = 'classified' | 'needs_review'
 export type CategorySource = 'ai' | 'manual' | 'rule' | 'storebox'
@@ -146,6 +155,7 @@ export type NetWorth = {
 
 export type SinSummary = {
   tag: SinTag
+  label: string // visningsnavn (fast eller brugerdefineret) - resolves i getSinSummary
   amount: number // forbrug denne måned på dette sin_tag
 }
 
@@ -246,6 +256,8 @@ export function parseFinanceRule(content: string): { category: Category | null; 
     // Kategori-noeglen kan vaere brugerdefineret -> valider IKKE mod de faste her.
     // Reglen blev skrevet med en gyldig noegle (saveFinanceRule), saa den er paalidelig.
     category: cm ? cm[1].toLowerCase() : null,
-    sin: sm && isSinTag(sm[1]) ? (sm[1] as SinTag) : null,
+    // Sin-noeglen kan vaere brugerdefineret -> valider IKKE mod de faste. 'ingen' er
+    // sentinel for "ingen synd" (jf. formatFinanceRule), saa den mappes til null.
+    sin: sm && sm[1].toLowerCase() !== 'ingen' ? sm[1].toLowerCase() : null,
   }
 }

@@ -21,8 +21,9 @@ import {
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
-import { isSinTag, merchantToken, type TransactionLine, type ProductGroup } from '@/lib/finance-shared'
+import { merchantToken, type TransactionLine, type ProductGroup } from '@/lib/finance-shared'
 import { loadCategories, addCategory, deleteCategory } from '@/lib/finance-categories'
+import { loadSins, addSin, deleteSin } from '@/lib/finance-sins'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -46,6 +47,14 @@ async function resolveCat(category: string): Promise<{ key: string; label: strin
   const cats = await loadCategories()
   const hit = cats.find((c) => c.key === category)
   return hit ? { key: hit.key, label: hit.label } : null
+}
+
+// Valider en synd-noegle mod den merged liste (faste + Gustavs egne). Returnerer
+// noeglen eller null (tom/ukendt). Ét lille opslag pr. gem - fint interaktivt.
+async function resolveSin(sinTag: string | null): Promise<string | null> {
+  if (!sinTag) return null
+  const sins = await loadSins()
+  return sins.some((s) => s.key === sinTag) ? sinTag : null
 }
 
 // Kort proaktiv opsummering på Telegram. Best-effort - må aldrig vælte importen.
@@ -149,7 +158,7 @@ export async function setCategoryAction(
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   const hit = await resolveCat(category)
   const cat = hit?.key ?? null
-  const sin = isSinTag(sinTag) ? sinTag : null
+  const sin = await resolveSin(sinTag)
   try {
     await setTransactionCategory(id, cat, sin, 'manual')
 
@@ -208,7 +217,7 @@ export async function setMerchantCategoryAction(
   if (!token) return { ok: false, message: 'Ukendt forretning.' }
   const hit = await resolveCat(category)
   const cat = hit?.key ?? null
-  const sin = isSinTag(sinTag) ? sinTag : null
+  const sin = await resolveSin(sinTag)
   if (!cat) return { ok: false, message: 'Vælg en kategori.' }
   try {
     await saveFinanceRule(token, cat, sin)
@@ -235,7 +244,7 @@ export async function setLineCategoryAction(
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   const cat = (await resolveCat(category))?.key ?? null
-  const sin = isSinTag(sinTag) ? sinTag : null
+  const sin = await resolveSin(sinTag)
   try {
     await setTransactionLineCategory(lineId, cat, sin)
     revalidate()
@@ -265,7 +274,7 @@ export async function setProductLineCategoryAction(
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   if (!key) return { ok: false, message: 'Ukendt vare.' }
   const cat = (await resolveCat(category))?.key ?? null
-  const sin = isSinTag(sinTag) ? sinTag : null
+  const sin = await resolveSin(sinTag)
   try {
     const n = await setProductLineCategory(key, cat, sin)
     revalidate()
@@ -293,6 +302,32 @@ export async function deleteCategoryAction(key: string): Promise<FinanceActionRe
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   try {
     const res = await deleteCategory(key)
+    if (!res.ok) return { ok: false, message: res.message }
+    revalidate()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// Brugerdefinerede synder: tilfoej / slet. Spejler kategori-actions. Paavirker alle
+// sin-dropdowns OG AI-klassificeringen (nye synder puttes i Haiku-prompten).
+export async function addSinAction(label: string): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  try {
+    const res = await addSin(label)
+    if (!res.ok) return { ok: false, message: res.message }
+    revalidate()
+    return { ok: true, message: 'Synd tilføjet.' }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export async function deleteSinAction(key: string): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  try {
+    const res = await deleteSin(key)
     if (!res.ok) return { ok: false, message: res.message }
     revalidate()
     return { ok: true }

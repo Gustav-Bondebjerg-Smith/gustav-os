@@ -10,13 +10,12 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import {
-  SIN_TAGS,
-  SIN_LABEL,
   type Category,
   type SinTag,
   type ProductGroup,
   type MerchantGroup,
   type CategoryDef,
+  type SinDef,
 } from '@/lib/finance-shared'
 import { setMerchantCategoryAction, getMerchantLineGroupsAction } from '@/app/finans/actions'
 import { FinanceMerchantLines } from './FinanceMerchantLines'
@@ -27,8 +26,17 @@ function kr(n: number): string {
 
 type RowState = { category: Category | ''; sin: SinTag | ''; saving: boolean; note: string | null }
 
-export function FinanceMerchantReview({ items, categories }: { items: MerchantGroup[]; categories: CategoryDef[] }) {
+export function FinanceMerchantReview({
+  items,
+  categories,
+  sins,
+}: {
+  items: MerchantGroup[]
+  categories: CategoryDef[]
+  sins: SinDef[]
+}) {
   const router = useRouter()
+  const sinLabel = new Map(sins.map((s) => [s.key, s.label]))
   const [query, setQuery] = useState('')
   const [showReviewed, setShowReviewed] = useState(false)
   const [state, setState] = useState<Record<string, RowState>>({})
@@ -138,7 +146,7 @@ export function FinanceMerchantReview({ items, categories }: { items: MerchantGr
                 <span className="mrev-name">{g.label}</span>
                 {g.reviewed && <span className="pill done">færdig</span>}
                 {g.mixed && <span className="pill warn">blandet</span>}
-                {g.sin && <span className="pill sin">{SIN_LABEL[g.sin]}</span>}
+                {g.sin && <span className="pill sin">{sinLabel.get(g.sin) ?? g.sin}</span>}
                 <span className="mrev-count num">{g.count}×</span>
                 <span className={`mrev-amt num ${g.total < 0 ? 'neg' : 'pos'}`}>{kr(g.total)}</span>
               </div>
@@ -165,9 +173,9 @@ export function FinanceMerchantReview({ items, categories }: { items: MerchantGr
                   aria-label="Sin"
                 >
                   <option value="">(ingen sin)</option>
-                  {SIN_TAGS.map((s) => (
-                    <option key={s} value={s}>
-                      {SIN_LABEL[s]}
+                  {sins.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
                     </option>
                   ))}
                 </select>
@@ -182,7 +190,7 @@ export function FinanceMerchantReview({ items, categories }: { items: MerchantGr
                   {lineGroups === 'loading' || lineGroups === undefined ? (
                     <p className="empty">Henter varer…</p>
                   ) : (
-                    <FinanceMerchantLines items={lineGroups} categories={categories} />
+                    <FinanceMerchantLines items={lineGroups} categories={categories} sins={sins} />
                   )}
                 </div>
               )}

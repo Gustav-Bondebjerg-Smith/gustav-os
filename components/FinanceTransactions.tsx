@@ -7,12 +7,10 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronRight, ChevronDown, Receipt } from 'lucide-react'
 import {
-  SIN_LABEL,
-  SIN_TAGS,
-  isSinTag,
   type Transaction,
   type TransactionLine,
   type CategoryDef,
+  type SinDef,
 } from '@/lib/finance-shared'
 import { getLinesAction, setCategoryAction, setLineCategoryAction } from '@/app/finans/actions'
 
@@ -26,8 +24,17 @@ function dayLabel(ymd: string): string {
   return m ? `${m[3]}/${m[2]}` : ymd
 }
 
-export function FinanceTransactions({ items, categories }: { items: Transaction[]; categories: CategoryDef[] }) {
+export function FinanceTransactions({
+  items,
+  categories,
+  sins,
+}: {
+  items: Transaction[]
+  categories: CategoryDef[]
+  sins: SinDef[]
+}) {
   const router = useRouter()
+  const sinLabel = new Map(sins.map((s) => [s.key, s.label]))
   const [openId, setOpenId] = useState<string | null>(null)
   const [linesById, setLinesById] = useState<Record<string, TransactionLine[] | 'loading'>>({})
   const [note, setNote] = useState<string | null>(null)
@@ -67,7 +74,7 @@ export function FinanceTransactions({ items, categories }: { items: Transaction[
     const category =
       next.category !== undefined ? (next.category || null) : line.category
     const sin =
-      next.sin !== undefined ? (isSinTag(next.sin) ? next.sin : null) : line.sin_tag
+      next.sin !== undefined ? (next.sin || null) : line.sin_tag
     setLinesById((p) => {
       const arr = p[txId]
       if (!arr || arr === 'loading') return p
@@ -111,7 +118,7 @@ export function FinanceTransactions({ items, categories }: { items: Transaction[
                 {hasReceipt && <Receipt size={12} className="tx-recpt" aria-label="Kvittering" />}
               </span>
               <div className="tx-tags">
-                {t.sin_tag && <span className="pill sin">{SIN_LABEL[t.sin_tag]}</span>}
+                {t.sin_tag && <span className="pill sin">{sinLabel.get(t.sin_tag) ?? t.sin_tag}</span>}
               </div>
               <select
                 className="tx-cat"
@@ -164,9 +171,9 @@ export function FinanceTransactions({ items, categories }: { items: Transaction[
                         aria-label="Vare-sin"
                       >
                         <option value="">(ingen sin)</option>
-                        {SIN_TAGS.map((s) => (
-                          <option key={s} value={s}>
-                            {SIN_LABEL[s]}
+                        {sins.map((s) => (
+                          <option key={s.key} value={s.key}>
+                            {s.label}
                           </option>
                         ))}
                       </select>

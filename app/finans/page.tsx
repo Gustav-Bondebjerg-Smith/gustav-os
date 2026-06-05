@@ -11,7 +11,6 @@ import {
   listManualBalances,
   listTransactions,
   listMerchantGroups,
-  SIN_LABEL,
   type NetWorth,
   type SinSummary,
   type NetWorthPoint,
@@ -19,15 +18,18 @@ import {
   type Transaction,
   type MerchantGroup,
   type CategoryDef,
+  type SinDef,
 } from '@/lib/finance'
 import { FinanceManualBalances } from '@/components/FinanceManualBalances'
 import { FinanceUpload } from '@/components/FinanceUpload'
 import { FinanceTransactions } from '@/components/FinanceTransactions'
 import { FinanceMerchantReview } from '@/components/FinanceMerchantReview'
 import { FinanceCategories } from '@/components/FinanceCategories'
+import { FinanceSins } from '@/components/FinanceSins'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
 import { PrivacyToggle } from '@/components/PrivacyToggle'
 import { loadCategories } from '@/lib/finance-categories'
+import { loadSins } from '@/lib/finance-sins'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,6 +43,7 @@ export default async function FinansPage() {
   let txs: Transaction[] = []
   let groups: MerchantGroup[] = []
   let categories: CategoryDef[] = []
+  let sinDefs: SinDef[] = []
   let history: NetWorthPoint[] = []
   let loadError: string | null = null
   let unclassified = 0
@@ -53,6 +56,7 @@ export default async function FinansPage() {
     txs = await listTransactions({ limit: 80 })
     groups = await listMerchantGroups({ includeReviewed: true })
     categories = await loadCategories()
+    sinDefs = await loadSins()
     unclassified = txs.filter((t) => t.category === null).length
   } catch (e) {
     loadError = e instanceof Error ? e.message : String(e)
@@ -133,7 +137,7 @@ export default async function FinansPage() {
             <div className="sin-rows">
               {sins.map((s) => (
                 <div className="sin-row" key={s.tag}>
-                  <span className="cat">{SIN_LABEL[s.tag]}</span>
+                  <span className="cat">{s.label}</span>
                   <span className="track"><span className="fill" style={{ width: `${Math.round((s.amount / sinMax) * 100)}%` }} /></span>
                   <span className="amt num">{fmt(s.amount)} kr</span>
                 </div>
@@ -151,7 +155,7 @@ export default async function FinansPage() {
             <div className="sect"><span className="no">★</span><span className="ttl">Gennemgå pr. forretning</span></div>
             <span className="tag num">{groups.filter((g) => !g.reviewed).length} forretninger</span>
           </div>
-          <FinanceMerchantReview items={groups} categories={categories} />
+          <FinanceMerchantReview items={groups} categories={categories} sins={sinDefs} />
         </section>
       )}
 
@@ -162,6 +166,15 @@ export default async function FinansPage() {
           <span className="tag num">{categories.length}</span>
         </div>
         <FinanceCategories items={categories} />
+      </section>
+
+      {/* Synder: tilfoej/slet egne (bruges i alle sin-menuer + AI-klassificering) */}
+      <section className="card fin-block">
+        <div className="card-head">
+          <div className="sect"><span className="no">!</span><span className="ttl">Synder</span></div>
+          <span className="tag num">{sinDefs.length}</span>
+        </div>
+        <FinanceSins items={sinDefs} />
       </section>
 
       {/* Manuelle balancer */}
@@ -188,7 +201,7 @@ export default async function FinansPage() {
           <div className="sect"><span className="no">E</span><span className="ttl">Posteringer</span></div>
           <span className="tag num">{unclassified > 0 ? `${unclassified} ukategoriseret` : 'seneste 80'}</span>
         </div>
-        <FinanceTransactions items={txs} categories={categories} />
+        <FinanceTransactions items={txs} categories={categories} sins={sinDefs} />
       </section>
 
       <p className="board-foot">

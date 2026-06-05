@@ -13,7 +13,6 @@ import { snapshotNetWorth } from './finance'
 import { saveMemory, recallForScope } from './memory-facts'
 import {
   CATEGORIES,
-  isSinTag,
   merchantToken,
   parseFinanceRule,
   formatFinanceRule,
@@ -21,6 +20,7 @@ import {
   type SinTag,
 } from './finance-shared'
 import { loadCategories } from './finance-categories'
+import { loadSins } from './finance-sins'
 
 const FINANCE_SCOPE = 'finance'
 
@@ -137,7 +137,13 @@ function extractJsonArray(raw: string): unknown {
 type ClassOut = { category: Category; sin: SinTag | null; confidence: 'high' | 'low' }
 type RawClass = { i?: number; category?: string; sin?: string | null; confidence?: string }
 
-function coerce(arr: RawClass[], n: number, fallback: Category, validKeys: Set<string>): ClassOut[] {
+function coerce(
+  arr: RawClass[],
+  n: number,
+  fallback: Category,
+  validKeys: Set<string>,
+  validSinKeys: Set<string>,
+): ClassOut[] {
   const byI = new Map<number, RawClass>()
   arr.forEach((a, idx) => byI.set(typeof a.i === 'number' ? a.i : idx, a))
   const out: ClassOut[] = []
@@ -145,7 +151,8 @@ function coerce(arr: RawClass[], n: number, fallback: Category, validKeys: Set<s
     const a = byI.get(i)
     out.push({
       category: typeof a?.category === 'string' && validKeys.has(a.category) ? a.category : fallback,
-      sin: isSinTag(a?.sin) ? (a!.sin as SinTag) : null,
+      // Synd valideres mod den merged liste (faste + Gustavs egne), ikke kun de faste.
+      sin: typeof a?.sin === 'string' && validSinKeys.has(a.sin) ? a.sin : null,
       confidence: a?.confidence === 'low' ? 'low' : 'high',
     })
   }
@@ -178,32 +185,44 @@ const TX_SYSTEM_BASE = [
   'confidence: "low" hvis du er i reel tvivl om kategorien (ukendt eller tvetydig forretning), ellers "high".',
 ].join('\n')
 
-// Byg AI-prompten med Gustavs egne kategorier oven paa de faste, saa Haiku OGSAA kan
-// auto-vaelge dem paa ukendte forretninger (Gustavs valg: "ogsaa AI'en"). Uden egne
-// kategorier er prompten byte-identisk med foer -> uaendret adfaerd i normaltilfaeldet.
-function buildTxSystem(custom: { key: string; label: string }[]): string {
-  if (custom.length === 0) return TX_SYSTEM_BASE
-  const extraKeys = custom.map((c) => c.key).join(', ')
-  const extraLines = custom.map((c) => `- ${c.key}: ${c.label} (brugerdefineret kategori).`)
-  return [
-    TX_SYSTEM_BASE,
-    `Derudover er disse brugerdefinerede kategorier OGSAA gyldige: ${extraKeys}.`,
-    ...extraLines,
-    'Vaelg en brugerdefineret kategori naar den passer tydeligt bedre end de faste.',
-  ].join('\n')
+// Byg AI-prompten med Gustavs egne kategorier OG synder oven paa de faste, saa Haiku
+// OGSAA kan auto-vaelge dem paa ukendte forretninger (Gustavs valg: "ogsaa AI'en").
+// Uden egne (begge tomme) er prompten byte-identisk med foer -> uaendret adfaerd.
+function buildTxSystem(
+  customCats: { key: string; label: string }[],
+  customSins: { key: string; label: string }[],
+): string {
+  if (customCats.length === 0 && customSins.length === 0) return TX_SYSTEM_BASE
+  const parts = [TX_SYSTEM_BASE]
+  if (customCats.length > 0) {
+    parts.push(
+      `Derudover er disse brugerdefinerede kategorier OGSAA gyldige: ${customCats.map((c) => c.key).join(', ')}.`,
+    )
+    for (const c of customCats) parts.push(`- ${c.key}: ${c.label} (brugerdefineret kategori).`)
+    parts.push('Vaelg en brugerdefineret kategori naar den passer tydeligt bedre end de faste.')
+  }
+  if (customSins.length > 0) {
+    parts.push(
+      `Derudover er disse brugerdefinerede synder OGSAA gyldige sin-vaerdier: ${customSins.map((s) => s.key).join(', ')}.`,
+    )
+    for (const s of customSins) parts.push(`- ${s.key}: ${s.label} (brugerdefineret synd).`)
+    parts.push('Saet KUN en brugerdefineret synd naar posteringen tydeligt er den synd; ellers null.')
+  }
+  return parts.join('\n')
 }
 
 async function classifyTransactionsBatch(
   items: { text: string; detail: string; amount: number }[],
   system: string,
   validKeys: Set<string>,
+  validSinKeys: Set<string>,
 ): Promise<ClassOut[]> {
   if (items.length === 0) return []
   const user = JSON.stringify(
     items.map((it, i) => ({ i, text: it.text, detail: it.detail.slice(0, 100), amount: it.amount })),
   )
   const raw = await haiku(system, user, 3600)
-  return coerce(extractJsonArray(raw) as RawClass[], items.length, 'andet', validKeys)
+  return coerce(extractJsonArray(raw) as RawClass[], items.length, 'andet', validKeys, validSinKeys)
 }
 
 type TxRow = { id: string; text_raw: string; detail: string; amount: number }
@@ -251,11 +270,16 @@ export async function classifyUnmatchedTransactions(
   // Anvend lærte regler FØRST: kendte forretninger kategoriseres deterministisk
   // (ingen AI), så systemet bliver klogere af Gustavs tidligere rettelser.
   const rules = await loadFinanceRules()
-  // Kategorier (faste + Gustavs egne) -> dynamisk prompt + gyldige noegler til
+  // Kategorier + synder (faste + Gustavs egne) -> dynamisk prompt + gyldige noegler til
   // validering af AI-svaret. Loades én gang pr. koersel.
   const cats = await loadCategories()
-  const txSystem = buildTxSystem(cats.filter((c) => !c.builtin))
+  const sins = await loadSins()
+  const txSystem = buildTxSystem(
+    cats.filter((c) => !c.builtin),
+    sins.filter((s) => !s.builtin),
+  )
   const txValidKeys = new Set(cats.map((c) => c.key))
+  const txValidSinKeys = new Set(sins.map((s) => s.key))
   const ruleHits: { row: TxRow; category: Category; sin: SinTag | null }[] = []
   const aiRows: TxRow[] = []
   for (const r of rows) {
@@ -293,6 +317,7 @@ export async function classifyUnmatchedTransactions(
         batch.map((r) => ({ text: r.text_raw, detail: r.detail, amount: r.amount })),
         txSystem,
         txValidKeys,
+        txValidSinKeys,
       )
       await Promise.all(
         batch.map((r, i) =>
@@ -367,7 +392,7 @@ export async function markMatchedTransactionsGrocery(): Promise<number> {
 
 // =============================== VARELINJER ===============================
 
-const LINE_SYSTEM = [
+const LINE_SYSTEM_BASE = [
   'Du kategoriserer varelinjer fra en dansk dagligvare-kvittering.',
   'Hver linje: name (varenavn), amount (pris).',
   'Returnér KUN et JSON-array, ét objekt pr. linje i SAMME rækkefølge:',
@@ -381,19 +406,33 @@ const LINE_SYSTEM = [
   'Mad, frugt, grønt, kød, fisk, mejeri, brød osv. = sin null.',
 ].join('\n')
 
+// Linje-prompt med Gustavs egne synder oven paa de faste (varelinjer bruger kun FASTE
+// kategorier, men synder kan vaere brugerdefinerede). Byte-identisk uden egne synder.
+function buildLineSystem(customSins: { key: string; label: string }[]): string {
+  if (customSins.length === 0) return LINE_SYSTEM_BASE
+  return [
+    LINE_SYSTEM_BASE,
+    `Derudover er disse brugerdefinerede synder OGSAA gyldige sin-vaerdier: ${customSins.map((s) => s.key).join(', ')}.`,
+    ...customSins.map((s) => `- ${s.key}: ${s.label} (brugerdefineret synd).`),
+    'Saet KUN en brugerdefineret synd naar varen tydeligt er den synd; ellers null.',
+  ].join('\n')
+}
+
 type LineRow = { id: string; text: string; amount: number }
 
 async function classifyLinesBatch(
   merchant: string,
   lines: { text: string; amount: number }[],
+  system: string,
+  validSinKeys: Set<string>,
 ): Promise<ClassOut[]> {
   if (lines.length === 0) return []
   const user = JSON.stringify({
     merchant,
     linjer: lines.map((l, i) => ({ i, name: l.text, amount: l.amount })),
   })
-  const raw = await haiku(LINE_SYSTEM, user, 1500)
-  return coerce(extractJsonArray(raw) as RawClass[], lines.length, 'dagligvarer', BUILTIN_CATEGORY_KEYS)
+  const raw = await haiku(system, user, 1500)
+  return coerce(extractJsonArray(raw) as RawClass[], lines.length, 'dagligvarer', BUILTIN_CATEGORY_KEYS, validSinKeys)
 }
 
 // Klassificér alle uklassificerede varelinjer, grupperet pr. transaktion (så
@@ -434,11 +473,21 @@ export async function classifyReceiptLines(
     }
   }
 
+  // Synder (faste + Gustavs egne) -> dynamisk linje-prompt + gyldige sin-noegler.
+  const sins = await loadSins()
+  const lineSystem = buildLineSystem(sins.filter((s) => !s.builtin))
+  const lineValidSinKeys = new Set(sins.map((s) => s.key))
+
   let classified = 0
   await mapWithConcurrency(entries, opts.concurrency ?? 5, async ([txId, lines]) => {
     try {
       const merchant = merchantByTx.get(txId) ?? ''
-      const cls = await classifyLinesBatch(merchant, lines.map((l) => ({ text: l.text, amount: l.amount })))
+      const cls = await classifyLinesBatch(
+        merchant,
+        lines.map((l) => ({ text: l.text, amount: l.amount })),
+        lineSystem,
+        lineValidSinKeys,
+      )
       await Promise.all(
         lines.map((l, i) =>
           sb

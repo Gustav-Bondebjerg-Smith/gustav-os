@@ -11,7 +11,6 @@ import { parseBankCsv } from './finance-csv'
 import { parseStoreboxReceipts } from './finance-storebox'
 import { reconcile } from './finance-reconcile'
 import {
-  isSinTag,
   merchantToken,
   productKey,
   type Category,
@@ -30,6 +29,7 @@ import {
   type ParsedReceipt,
   type ParsedReceiptLine,
 } from './finance-shared'
+import { loadSins } from './finance-sins'
 
 // Re-eksportér det klient-sikre lag, så server-kode kan nøjes med ét import-sted.
 export * from './finance-shared'
@@ -449,7 +449,7 @@ export async function listMerchantGroups(
       total: Math.round(g.total),
       spend: g.spend,
       category: domCat || null,
-      sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
+      sin: domSin || null,
       mixed: g.cat.size > 1,
       examples: [...g.labels.keys()].slice(0, 3),
       reviewed,
@@ -541,7 +541,7 @@ export async function getMerchantLineGroups(token: string): Promise<ProductGroup
       count: g.count,
       total: Math.round(g.total),
       category: domCat || null,
-      sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
+      sin: domSin || null,
       mixed: g.cat.size > 1,
     })
   }
@@ -707,7 +707,12 @@ export async function getNetWorth(): Promise<NetWorth> {
 export async function getSinSummary(): Promise<SinSummary[]> {
   const sb = getSupabase()
   const monthStart = todayCphYmd().slice(0, 7) + '-01'
-  const totals = new Map<SinTag, number>()
+  const totals = new Map<string, number>()
+  // Tæl ENHVER ikke-tom sin_tag (faste OG brugerdefinerede). Alle værdier i DB er
+  // gyldige synder (sat af AI mod validSinKeys, lærte regler eller manuelle settere).
+  const add = (v: unknown, amount: unknown) => {
+    if (typeof v === 'string' && v) totals.set(v, (totals.get(v) ?? 0) + Math.abs(Number(amount)))
+  }
 
   const { data: txs, error: te } = await sb
     .from('transactions')
@@ -717,7 +722,7 @@ export async function getSinSummary(): Promise<SinSummary[]> {
   if (te) throw new Error(`getSinSummary tx-fejl: ${te.message}`)
   for (const r of txs ?? []) {
     const row = r as Record<string, unknown>
-    if (isSinTag(row.sin_tag)) totals.set(row.sin_tag, (totals.get(row.sin_tag) ?? 0) + Math.abs(Number(row.amount)))
+    add(row.sin_tag, row.amount)
   }
 
   const { data: lines, error: le } = await sb
@@ -728,11 +733,14 @@ export async function getSinSummary(): Promise<SinSummary[]> {
   if (le) throw new Error(`getSinSummary lines-fejl: ${le.message}`)
   for (const r of lines ?? []) {
     const row = r as Record<string, unknown>
-    if (isSinTag(row.sin_tag)) totals.set(row.sin_tag, (totals.get(row.sin_tag) ?? 0) + Math.abs(Number(row.amount)))
+    add(row.sin_tag, row.amount)
   }
 
+  // Visningsnavne (faste + Gustavs egne). En slettet egen synd på gamle rækker falder
+  // tilbage til sin rå nøgle, indtil de rettes.
+  const labelOf = new Map((await loadSins()).map((s) => [s.key, s.label]))
   return [...totals.entries()]
-    .map(([tag, amount]) => ({ tag, amount: Math.round(amount) }))
+    .map(([tag, amount]) => ({ tag, label: labelOf.get(tag) ?? tag, amount: Math.round(amount) }))
     .sort((a, b) => b.amount - a.amount)
 }
 

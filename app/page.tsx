@@ -6,7 +6,7 @@ import { getEvents, type GoogleCalendarEvent } from '@/lib/calendar'
 import { startOfTodayCph, endOfTodayCph, isPastDayCph } from '@/lib/format'
 import { listTasks, type Task } from '@/lib/tasks'
 import { listGoals, SCOPES, SCOPE_LABEL, type Goal } from '@/lib/goals'
-import { getNetWorth, getSinSummary, getNetWorthHistory, SIN_LABEL, type NetWorth, type SinSummary, type NetWorthPoint } from '@/lib/finance'
+import { getNetWorth, getSinSummary, getNetWorthHistory, type NetWorth, type SinSummary, type NetWorthPoint } from '@/lib/finance'
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
@@ -182,7 +182,7 @@ export default async function HomePage() {
                 <div className="sin-rows">
                   {sins.slice(0, 5).map((s) => (
                     <div className="sin-row" key={s.tag}>
-                      <span className="cat">{SIN_LABEL[s.tag]}</span>
+                      <span className="cat">{s.label}</span>
                       <span className="track"><span className="fill" style={{ width: `${Math.round((s.amount / sinMax) * 100)}%` }} /></span>
                       <span className="amt num">{kr(s.amount)}</span>
                     </div>
