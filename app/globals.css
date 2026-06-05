@@ -181,8 +181,10 @@ body {
 /* ====================================================== Privatlivs-slør (toggle)
    PrivacyToggle sætter .fin-private på <html>; et no-flash-script i layout.tsx
    sætter den før paint. Slører nettoformue + syndeudgifter på BÅDE forsiden og
-   /finans (delt state). Beløb/grafer sløres, mens labels + kategorinavne bevares,
-   så kortene stadig kan læses. */
+   /finans (delt state). Kraftigt slør så intet kan tydes: 16px på de fleste tal,
+   28px på headline-nettoformuen (op til 52px - kræver mere blur for at blive
+   ulæselig). Kort-titler og kolonne-labels udenfor værdi-blokkene forbliver skarpe.
+   NB: blur() understøtter ikke max()/em i Chrome (falder til 0) - derfor rene px. */
 .priv-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--color-border); border-radius: 8px; background: transparent; color: var(--color-ink-3); cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
 .priv-toggle:hover { color: var(--color-ink-1); border-color: var(--color-ink-3); }
 .priv-toggle[aria-pressed="true"] { color: var(--color-accent); border-color: var(--color-accent-line); }
@@ -196,11 +198,18 @@ html.fin-private .nw-chart,
 html.fin-private .sin-total,
 html.fin-private .sin-rows,
 html.fin-private [data-private] {
-  filter: blur(8px);
-  -webkit-filter: blur(8px);
+  filter: blur(16px);
+  -webkit-filter: blur(16px);
   user-select: none;
   -webkit-user-select: none;
   transition: filter .18s ease;
+}
+/* Det store headline-nettoformue-tal (op til 52px) skal sløres kraftigere end de
+   små tal for at blive ulæseligt - blur skal være ~halvdelen af skriftstørrelsen.
+   Samme specificitet som gruppe-reglen ovenfor, så den vinder via kilde-rækkefølge. */
+html.fin-private .nw-value {
+  filter: blur(28px);
+  -webkit-filter: blur(28px);
 }
 
 /* ============================================================ #04 OPGAVER (bento) */
