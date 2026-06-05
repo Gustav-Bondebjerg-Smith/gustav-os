@@ -14,6 +14,7 @@ import {
   isCategory,
   isSinTag,
   merchantToken,
+  productKey,
   type Category,
   type SinTag,
   type CategorySource,
@@ -25,6 +26,7 @@ import {
   type NetWorthPoint,
   type SinSummary,
   type MerchantGroup,
+  type ProductGroup,
   type ParsedBankTx,
   type ParsedReceipt,
   type ParsedReceiptLine,
@@ -458,36 +460,129 @@ export async function listMerchantGroups(
   return out
 }
 
-// Alle posteringer for EN forretning (token), til udfoldningen i forretnings-
-// gennemgangen. Samme scan+filter som applyLearnedCategory (token udregnes i kode,
-// ingen stored kolonne). Kvitteringer foerst (de har varelinjer at rette), saa
-// nyeste; cap saa en tung forretning ikke henter hele historikken.
-export async function getMerchantTransactions(
-  token: string,
-  opts: { limit?: number } = {},
-): Promise<Transaction[]> {
+// Varelinjerne for EN forretning, foldet sammen pr. vare (productKey) til
+// udfoldningen i forretnings-gennemgangen. Saa Gustav retter "Pepsi Max" EN gang i
+// stedet for at aabne hver kvittering. Henter forst forretningens transaktions-id'er
+// (scan+filter pr. token), saa deres varelinjer, og aggregerer. Sorteret efter
+// hyppighed, dernaest forbrug.
+export async function getMerchantLineGroups(token: string): Promise<ProductGroup[]> {
   if (!token) return []
   const sb = getSupabase()
-  const matched: Transaction[] = []
   const PAGE = 1000
+
+  // 1) forretningens transaktions-id'er.
+  const txIds: string[] = []
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await sb
       .from('transactions')
-      .select(TX_COLS)
+      .select('id, text_raw')
       .range(from, from + PAGE - 1)
-    if (error) throw new Error(`getMerchantTransactions-fejl: ${error.message}`)
+    if (error) throw new Error(`getMerchantLineGroups (tx) -fejl: ${error.message}`)
     const page = (data ?? []) as Record<string, unknown>[]
     for (const r of page) {
-      if (merchantToken(String(r.text_raw ?? '')) === token) matched.push(rowToTx(r))
+      if (merchantToken(String(r.text_raw ?? '')) === token) txIds.push(String(r.id))
     }
     if (page.length < PAGE) break
   }
-  matched.sort(
-    (a, b) =>
-      Number(!!b.storebox_receipt_id) - Number(!!a.storebox_receipt_id) ||
-      b.booked_date.localeCompare(a.booked_date),
-  )
-  return matched.slice(0, opts.limit ?? 60)
+  if (txIds.length === 0) return []
+
+  // 2) deres varelinjer (chunket .in).
+  type LRow = { text: string; amount: number; category: string | null; sin: string | null }
+  const lines: LRow[] = []
+  for (let i = 0; i < txIds.length; i += 200) {
+    const chunk = txIds.slice(i, i + 200)
+    const { data, error } = await sb
+      .from('transaction_lines')
+      .select('text, amount, category, sin_tag')
+      .in('transaction_id', chunk)
+    if (error) throw new Error(`getMerchantLineGroups (lines) -fejl: ${error.message}`)
+    for (const r of (data ?? []) as Record<string, unknown>[]) {
+      lines.push({
+        text: String(r.text ?? ''),
+        amount: Number(r.amount) || 0,
+        category: (r.category as string) ?? null,
+        sin: (r.sin_tag as string) ?? null,
+      })
+    }
+  }
+
+  // 3) aggregér pr. productKey.
+  type Acc = { count: number; total: number; cat: Map<string, number>; sin: Map<string, number>; labels: Map<string, number> }
+  const groups = new Map<string, Acc>()
+  for (const l of lines) {
+    const key = productKey(l.text)
+    if (!key) continue
+    let g = groups.get(key)
+    if (!g) {
+      g = { count: 0, total: 0, cat: new Map(), sin: new Map(), labels: new Map() }
+      groups.set(key, g)
+    }
+    g.count++
+    g.total += l.amount
+    if (l.category) g.cat.set(l.category, (g.cat.get(l.category) ?? 0) + 1)
+    if (l.sin) g.sin.set(l.sin, (g.sin.get(l.sin) ?? 0) + 1)
+    const lab = l.text.trim()
+    if (lab) g.labels.set(lab, (g.labels.get(lab) ?? 0) + 1)
+  }
+
+  const topKey = (m: Map<string, number>): string | null => {
+    let best: string | null = null
+    let n = -1
+    for (const [k, v] of m) if (v > n) { best = k; n = v }
+    return best
+  }
+
+  const out: ProductGroup[] = []
+  for (const [key, g] of groups) {
+    const domCat = topKey(g.cat)
+    const domSin = topKey(g.sin)
+    out.push({
+      key,
+      label: topKey(g.labels) ?? key,
+      count: g.count,
+      total: Math.round(g.total),
+      category: domCat && isCategory(domCat) ? (domCat as Category) : null,
+      sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
+      mixed: g.cat.size > 1,
+    })
+  }
+  out.sort((a, b) => b.count - a.count || Math.abs(b.total) - Math.abs(a.total))
+  return out
+}
+
+// Global vare-rettelse: sæt kategori/sin paa ALLE varelinjer med samme productKey,
+// uanset butik (Gustavs valg: en vare er den samme overalt). productKey udregnes i
+// kode, saa vi scanner + filtrerer (som applyLearnedCategory). Returnerer antal.
+export async function setProductLineCategory(
+  key: string,
+  category: Category | null,
+  sin: SinTag | null,
+): Promise<number> {
+  if (!key) return 0
+  const sb = getSupabase()
+  const ids: string[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transaction_lines')
+      .select('id, text')
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`setProductLineCategory (scan) -fejl: ${error.message}`)
+    const page = (data ?? []) as Record<string, unknown>[]
+    for (const r of page) if (productKey(String(r.text ?? '')) === key) ids.push(String(r.id))
+    if (page.length < PAGE) break
+  }
+  let updated = 0
+  for (let i = 0; i < ids.length; i += 200) {
+    const slice = ids.slice(i, i + 200)
+    const { error } = await sb
+      .from('transaction_lines')
+      .update({ category, sin_tag: sin })
+      .in('id', slice)
+    if (error) throw new Error(`setProductLineCategory (update) -fejl: ${error.message}`)
+    updated += slice.length
+  }
+  return updated
 }
 
 export async function getTransactionLines(transactionId: string): Promise<TransactionLine[]> {

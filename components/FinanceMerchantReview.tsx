@@ -16,11 +16,11 @@ import {
   SIN_LABEL,
   type Category,
   type SinTag,
-  type Transaction,
+  type ProductGroup,
   type MerchantGroup,
 } from '@/lib/finance-shared'
-import { setMerchantCategoryAction, getMerchantTransactionsAction } from '@/app/finans/actions'
-import { FinanceTransactions } from './FinanceTransactions'
+import { setMerchantCategoryAction, getMerchantLineGroupsAction } from '@/app/finans/actions'
+import { FinanceMerchantLines } from './FinanceMerchantLines'
 
 function kr(n: number): string {
   return Math.round(n).toLocaleString('da-DK') + ' kr'
@@ -34,7 +34,7 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
   const [showReviewed, setShowReviewed] = useState(false)
   const [state, setState] = useState<Record<string, RowState>>({})
   const [openToken, setOpenToken] = useState<string | null>(null)
-  const [txByToken, setTxByToken] = useState<Record<string, Transaction[] | 'loading'>>({})
+  const [linesByToken, setLinesByToken] = useState<Record<string, ProductGroup[] | 'loading'>>({})
 
   // Effektiv værdi for en række: lokal override hvis sat, ellers det dominerende
   // fra serveren.
@@ -60,10 +60,10 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
       return
     }
     setOpenToken(token)
-    if (!txByToken[token]) {
-      setTxByToken((p) => ({ ...p, [token]: 'loading' }))
-      const txs = await getMerchantTransactionsAction(token)
-      setTxByToken((p) => ({ ...p, [token]: txs }))
+    if (!linesByToken[token]) {
+      setLinesByToken((p) => ({ ...p, [token]: 'loading' }))
+      const groups = await getMerchantLineGroupsAction(token)
+      setLinesByToken((p) => ({ ...p, [token]: groups }))
     }
   }
 
@@ -124,7 +124,7 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
         {filtered.map((g) => {
           const r = rowFor(g)
           const isOpen = openToken === g.token
-          const txs = txByToken[g.token]
+          const lineGroups = linesByToken[g.token]
           return (
             <div className={`mrev-row ${isOpen ? 'open' : ''}`} key={g.token}>
               <div className="mrev-top">
@@ -180,10 +180,10 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
 
               {isOpen && (
                 <div className="mrev-drill">
-                  {txs === 'loading' || txs === undefined ? (
-                    <p className="empty">Henter posteringer…</p>
+                  {lineGroups === 'loading' || lineGroups === undefined ? (
+                    <p className="empty">Henter varer…</p>
                   ) : (
-                    <FinanceTransactions items={txs} />
+                    <FinanceMerchantLines items={lineGroups} />
                   )}
                 </div>
               )}

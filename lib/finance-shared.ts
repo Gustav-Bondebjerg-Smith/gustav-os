@@ -155,6 +155,18 @@ export type MerchantGroup = {
   reviewed: boolean // alle posteringer er manuelt sat = forretningen er gennemgaaet
 }
 
+// Én vare i forretnings-udfoldningen: alle varelinjer med samme productKey foldet
+// sammen (fx alle "Pepsi Max"-linjer). Klient-sikker. Vist i FinanceMerchantLines.
+export type ProductGroup = {
+  key: string
+  label: string // hyppigste raa varenavn
+  count: number
+  total: number // sum beloeb for varen
+  category: Category | null // dominerende kategori
+  sin: SinTag | null // dominerende sin
+  mixed: boolean // flere kategorier paa tvaers
+}
+
 // Ét punkt på nettoformue-kurven (et dagligt snapshot). checking = bank-saldo,
 // netWorth = checking + manuelle balancer (historisk antaget = nuværende).
 export type NetWorthPoint = {
@@ -197,6 +209,20 @@ export function merchantToken(text: string): string {
     if (t.length >= 3 && !/^\d+$/.test(t) && !MERCHANT_NOISE.has(t)) return t
   }
   return norm.split(' ')[0] ?? ''
+}
+
+// Stabil vare-nøgle udledt af varelinjens tekst (fx "PEPSI MAX *" -> "pepsi max").
+// Folder ens varer sammen på tværs af kvitteringer og bruges til global vare-
+// rettelse. Beholder HELE det normaliserede navn (modsat merchantToken, der kun
+// tager første ord), så forskellige varer ikke kollapser til samme nøgle.
+export function productKey(text: string): string {
+  return (text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(DIACRITICS, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // Lært regel <-> memory_facts.content (scope 'finance', key = merchantToken).

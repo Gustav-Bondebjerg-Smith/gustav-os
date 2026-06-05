@@ -14,13 +14,14 @@ import {
   setTransactionLineCategory,
   getTransactionLines,
   getTransaction,
-  getMerchantTransactions,
+  getMerchantLineGroups,
+  setProductLineCategory,
   applyLearnedCategory,
   backfillNetWorthSnapshots,
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
-import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine, type Transaction } from '@/lib/finance-shared'
+import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine, type ProductGroup } from '@/lib/finance-shared'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -232,13 +233,32 @@ export async function setLineCategoryAction(
   }
 }
 
-// Lazy-load alle posteringer for en forretning (udfoldningen i gennemgangen).
-// Read-only -> ingen revalidate; fejler bloedt til tom liste.
-export async function getMerchantTransactionsAction(token: string): Promise<Transaction[]> {
+// Lazy-load forretningens varer (foldet pr. vare) til udfoldningen. Read-only.
+export async function getMerchantLineGroupsAction(token: string): Promise<ProductGroup[]> {
   if (!(await authedEmail())) return []
   try {
-    return await getMerchantTransactions(token)
+    return await getMerchantLineGroups(token)
   } catch {
     return []
+  }
+}
+
+// Global vare-rettelse: sæt kategori/sin paa ALLE varelinjer med samme vare-noegle
+// (uanset butik). Returnerer hvor mange linjer der blev rettet.
+export async function setProductLineCategoryAction(
+  key: string,
+  category: string,
+  sinTag: string | null,
+): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  if (!key) return { ok: false, message: 'Ukendt vare.' }
+  const cat = isCategory(category) ? category : null
+  const sin = isSinTag(sinTag) ? sinTag : null
+  try {
+    const n = await setProductLineCategory(key, cat, sin)
+    revalidate()
+    return { ok: true, message: `${n} varelinje${n === 1 ? '' : 'r'} rettet.` }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }
 }
