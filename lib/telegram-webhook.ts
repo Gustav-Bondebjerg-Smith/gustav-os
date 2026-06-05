@@ -7,7 +7,7 @@ import { fmtRange, fmtDay, startOfTodayCph, endOfTodayCph } from './format'
 import { storeChunk } from './memory'
 import { getEvents, insertEvent, updateEvent, deleteEvent, type GoogleCalendarEvent } from './calendar'
 import { classify, VALID_AREAS, type Classification } from './capture'
-import { createTaskFromCapture, URGENCY_LABEL, type Task } from './tasks'
+import { createTaskFromCapture, completeTask, moveTask, deleteTask, listTasks, URGENCIES, URGENCY_LABEL, isUrgency, type Task } from './tasks'
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
 
@@ -1621,6 +1621,225 @@ async function handleAgentCreate(
   return { status: 'processed', reason: 'agent_create_done' }
 }
 
+// ---- Opgave-board via routeren (create/complete/move/delete/list) ----
+// Tynde wrappers over lib/tasks. create genbruger createTaskFromCapture (samme
+// klassificering som web-boardet). complete/move/delete identificerer opgaven ud
+// fra et søgeord i titlen: matchet vælges DETERMINISTISK i kode (ikke af LLM'en,
+// jf. instans-lektien i CLAUDE.md), og er det tvetydigt eller uden match, spørger
+// vi i stedet for at gætte forkert.
+function normalizeTaskText(s: string): string {
+  return s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim()
+}
+
+// Score et titel-match mod hint'et. Eksakt > substreng > token-overlap. Bevidst
+// simpelt: boardet har få åbne opgaver, så substreng + ord-stamme rammer fint.
+function taskMatchScore(hintNorm: string, titleNorm: string): number {
+  if (!hintNorm || !titleNorm) return 0
+  if (titleNorm === hintNorm) return 1000
+  if (titleNorm.includes(hintNorm)) return 600
+  if (hintNorm.includes(titleNorm)) return 400
+  const hintTokens = hintNorm.split(/\s+/).filter((w) => w.length >= 2)
+  if (hintTokens.length === 0) return 0
+  const titleTokens = titleNorm.split(/\s+/).filter(Boolean)
+  let hits = 0
+  for (const h of hintTokens) {
+    if (titleTokens.some((t) => t === h || t.startsWith(h) || h.startsWith(t))) hits++
+  }
+  if (hits === 0) return 0
+  return 10 * hits + (hits === hintTokens.length ? 5 : 0)
+}
+
+type TaskResolution =
+  | { kind: 'match'; task: Task }
+  | { kind: 'ambiguous'; tasks: Task[] }
+  | { kind: 'none' }
+
+// Vælg én opgave ud fra hint. Flere lige-gode kandidater -> 'ambiguous' (vi
+// spørger). Ingen over 0 -> 'none'. Aldrig et tvunget gæt på det destruktive.
+function resolveTaskByHint(hint: string, tasks: Task[]): TaskResolution {
+  const hintNorm = normalizeTaskText(hint)
+  if (!hintNorm || tasks.length === 0) return { kind: 'none' }
+  const scored = tasks
+    .map((t) => ({ t, s: taskMatchScore(hintNorm, normalizeTaskText(t.title)) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s)
+  if (scored.length === 0) return { kind: 'none' }
+  const best = scored[0].s
+  const winners = scored.filter((x) => x.s === best)
+  if (winners.length === 1) return { kind: 'match', task: winners[0].t }
+  return { kind: 'ambiguous', tasks: winners.map((x) => x.t) }
+}
+
+function taskNotFoundMessage(hint: string, openTasks: Task[]): string {
+  if (openTasks.length === 0) return 'Du har ingen åbne opgaver på boardet.'
+  const list = openTasks.slice(0, 8).map((t) => `• ${t.title}`).join('\n')
+  return `Fandt ingen opgave der matcher "${hint}". Dine åbne opgaver:\n${list}`
+}
+
+function taskAmbiguousMessage(hint: string, tasks: Task[]): string {
+  const list = tasks.map((t) => `• ${t.title}`).join('\n')
+  return `Flere opgaver matcher "${hint}". Hvilken mener du? Skriv lidt mere af titlen.\n${list}`
+}
+
+async function handleAgentTaskCreate(msg: TelegramMessage, title: string): Promise<HandleResult> {
+  if (!title) {
+    await sendMessage(msg.chat.id, 'Hvad skal opgaven hedde?')
+    return { status: 'processed', reason: 'agent_task_create_missing_title' }
+  }
+  try {
+    const task = await createTaskFromCapture({ text: title })
+    const bits = [URGENCY_LABEL[task.urgency]]
+    if (task.key) bits.push('vigtig')
+    if (task.due_date) bits.push(`frist ${fmtDay(task.due_date)}`)
+    await sendMessage(msg.chat.id, `✅ Tilføjet: ${task.title}\n${bits.join(' · ')}`)
+    return { status: 'processed', reason: 'agent_task_created' }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke tilføje opgaven: ${err}`)
+    return { status: 'processed', reason: 'agent_task_create_failed' }
+  }
+}
+
+async function handleAgentTaskComplete(msg: TelegramMessage, hint: string): Promise<HandleResult> {
+  if (!hint) {
+    await sendMessage(msg.chat.id, 'Hvilken opgave er du færdig med?')
+    return { status: 'processed', reason: 'agent_task_complete_missing_hint' }
+  }
+  let tasks: Task[]
+  try {
+    tasks = await listTasks()
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke hente opgaverne: ${err}`)
+    return { status: 'processed', reason: 'agent_task_complete_list_failed' }
+  }
+  const res = resolveTaskByHint(hint, tasks)
+  if (res.kind === 'none') {
+    await sendMessage(msg.chat.id, taskNotFoundMessage(hint, tasks))
+    return { status: 'processed', reason: 'agent_task_complete_no_match' }
+  }
+  if (res.kind === 'ambiguous') {
+    await sendMessage(msg.chat.id, taskAmbiguousMessage(hint, res.tasks))
+    return { status: 'processed', reason: 'agent_task_complete_ambiguous' }
+  }
+  try {
+    await completeTask(res.task.id)
+    await sendMessage(msg.chat.id, `✔️ Færdig: ${res.task.title}`)
+    return { status: 'processed', reason: 'agent_task_completed' }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke markere opgaven færdig: ${err}`)
+    return { status: 'processed', reason: 'agent_task_complete_failed' }
+  }
+}
+
+async function handleAgentTaskMove(
+  msg: TelegramMessage,
+  hint: string,
+  urgencyRaw: string
+): Promise<HandleResult> {
+  if (!hint) {
+    await sendMessage(msg.chat.id, 'Hvilken opgave vil du flytte?')
+    return { status: 'processed', reason: 'agent_task_move_missing_hint' }
+  }
+  if (!isUrgency(urgencyRaw)) {
+    await sendMessage(msg.chat.id, 'Flytte til hvornår? Skriv i dag, denne uge, denne måned eller senere.')
+    return { status: 'processed', reason: 'agent_task_move_bad_urgency' }
+  }
+  let tasks: Task[]
+  try {
+    tasks = await listTasks()
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke hente opgaverne: ${err}`)
+    return { status: 'processed', reason: 'agent_task_move_list_failed' }
+  }
+  const res = resolveTaskByHint(hint, tasks)
+  if (res.kind === 'none') {
+    await sendMessage(msg.chat.id, taskNotFoundMessage(hint, tasks))
+    return { status: 'processed', reason: 'agent_task_move_no_match' }
+  }
+  if (res.kind === 'ambiguous') {
+    await sendMessage(msg.chat.id, taskAmbiguousMessage(hint, res.tasks))
+    return { status: 'processed', reason: 'agent_task_move_ambiguous' }
+  }
+  try {
+    await moveTask(res.task.id, urgencyRaw)
+    await sendMessage(msg.chat.id, `➡️ Flyttet til ${URGENCY_LABEL[urgencyRaw]}: ${res.task.title}`)
+    return { status: 'processed', reason: 'agent_task_moved' }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke flytte opgaven: ${err}`)
+    return { status: 'processed', reason: 'agent_task_move_failed' }
+  }
+}
+
+async function handleAgentTaskDelete(msg: TelegramMessage, hint: string): Promise<HandleResult> {
+  if (!hint) {
+    await sendMessage(msg.chat.id, 'Hvilken opgave skal slettes?')
+    return { status: 'processed', reason: 'agent_task_delete_missing_hint' }
+  }
+  let tasks: Task[]
+  try {
+    tasks = await listTasks()
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke hente opgaverne: ${err}`)
+    return { status: 'processed', reason: 'agent_task_delete_list_failed' }
+  }
+  const res = resolveTaskByHint(hint, tasks)
+  if (res.kind === 'none') {
+    await sendMessage(msg.chat.id, taskNotFoundMessage(hint, tasks))
+    return { status: 'processed', reason: 'agent_task_delete_no_match' }
+  }
+  if (res.kind === 'ambiguous') {
+    await sendMessage(msg.chat.id, taskAmbiguousMessage(hint, res.tasks))
+    return { status: 'processed', reason: 'agent_task_delete_ambiguous' }
+  }
+  try {
+    await deleteTask(res.task.id)
+    await sendMessage(msg.chat.id, `🗑 Slettet: ${res.task.title}`)
+    return { status: 'processed', reason: 'agent_task_deleted' }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke slette opgaven: ${err}`)
+    return { status: 'processed', reason: 'agent_task_delete_failed' }
+  }
+}
+
+async function handleAgentTaskList(msg: TelegramMessage, urgencyRaw: string): Promise<HandleResult> {
+  let tasks: Task[]
+  try {
+    tasks = await listTasks(isUrgency(urgencyRaw) ? { urgency: urgencyRaw } : undefined)
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    await sendMessage(msg.chat.id, `Kunne ikke hente opgaverne: ${err}`)
+    return { status: 'processed', reason: 'agent_task_list_failed' }
+  }
+  if (tasks.length === 0) {
+    await sendMessage(
+      msg.chat.id,
+      isUrgency(urgencyRaw)
+        ? `Ingen åbne opgaver under ${URGENCY_LABEL[urgencyRaw]}.`
+        : 'Du har ingen åbne opgaver på boardet.'
+    )
+    return { status: 'processed', reason: 'agent_task_list_empty' }
+  }
+  const lines: string[] = []
+  if (isUrgency(urgencyRaw)) {
+    for (const t of tasks) lines.push(`• ${t.title}${t.key ? ' (vigtig)' : ''}`)
+  } else {
+    for (const u of URGENCIES) {
+      const grp = tasks.filter((t) => t.urgency === u)
+      if (grp.length === 0) continue
+      lines.push(`${URGENCY_LABEL[u]}:`)
+      for (const t of grp) lines.push(`• ${t.title}${t.key ? ' (vigtig)' : ''}`)
+    }
+  }
+  await sendMessage(msg.chat.id, `📋 Åbne opgaver (${tasks.length}):\n${lines.join('\n')}`)
+  return { status: 'processed', reason: 'agent_task_listed' }
+}
+
 // Kort-tids samtale-hukommelse for routeren. Når routeren stiller et afklarende
 // spørgsmål, gemmer vi samtalen-indtil-nu, så Gustavs NÆSTE besked (svaret) sendes
 // med som kontekst og fuldfører den oprindelige handling i stedet for at blive
@@ -1783,6 +2002,27 @@ async function dispatchViaAgent(
         console.error('save_memory fejlede (gemmer som note i stedet):', e)
         return handleCapture(msg, text, source)
       }
+    }
+    case 'create_task': {
+      const title = typeof input.title === 'string' ? input.title.trim() : ''
+      return handleAgentTaskCreate(msg, title)
+    }
+    case 'complete_task': {
+      const hint = typeof input.task_hint === 'string' ? input.task_hint.trim() : ''
+      return handleAgentTaskComplete(msg, hint)
+    }
+    case 'move_task': {
+      const hint = typeof input.task_hint === 'string' ? input.task_hint.trim() : ''
+      const urgency = typeof input.urgency === 'string' ? input.urgency.trim() : ''
+      return handleAgentTaskMove(msg, hint, urgency)
+    }
+    case 'delete_task': {
+      const hint = typeof input.task_hint === 'string' ? input.task_hint.trim() : ''
+      return handleAgentTaskDelete(msg, hint)
+    }
+    case 'list_tasks': {
+      const urgency = typeof input.urgency === 'string' ? input.urgency.trim() : ''
+      return handleAgentTaskList(msg, urgency)
     }
     default:
       console.warn('agent-router: ukendt værktøj', routed.tool)

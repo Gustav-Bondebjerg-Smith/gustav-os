@@ -20,6 +20,11 @@ const TOOL_TO_LABEL = {
   stop_activity: 'stop_aktivitet',
   search_memory: 'opslag',
   save_note: 'note',
+  create_task: 'opgave',
+  complete_task: 'opgave_faerdig',
+  move_task: 'opgave_flyt',
+  delete_task: 'opgave_slet',
+  list_tasks: 'opgave_liste',
 }
 
 // Minimal men korrekt CSV-parser (håndterer citater, kommaer og newlines i felter).

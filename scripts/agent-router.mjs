@@ -90,7 +90,7 @@ export const TOOLS = [
   },
   {
     name: 'save_note',
-    description: 'Gem beskeden som en note i second brain. Dette er det RETTE valg for ægte noter, reminders ("husk at ..."), tanker, ideer, observationer og vage/ukonkrete fremtidsplaner. Det er IKKE en skraldespand: vælg kun save_note når der ikke er en konkret handling.',
+    description: 'Gem beskeden som en note i second brain. Det RETTE valg for IKKE-handlinger: tanker, ideer, observationer og fakta/info Gustav vil huske. Det er IKKE en skraldespand, og IKKE for ting Gustav skal GØRE - et konkret næste-skridt (også "husk at gøre X") er en opgave (create_task).',
     input_schema: {
       type: 'object',
       properties: {
@@ -113,6 +113,62 @@ export const TOOLS = [
       required: ['type', 'key', 'content'],
     },
   },
+  {
+    name: 'create_task',
+    description: 'Tilføj en NY opgave til Gustavs opgave-board (to-do). Brug når beskeden er et konkret NÆSTE-SKRIDT Gustav skal GØRE (handlingsverbum: ring, læs, køb, aftal, send, book, opdater...), også pakket som reminder: "husk at ringe til mor", "tilføj opgave: køb mælk", "jeg skal nå at læse kapitel 5". IKKE en aftale med klokkeslæt (create_event), og IKKE en ikke-handling som en tanke/observation/fakta (save_note).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Opgaven som kort handling. Behold tids-ord ("i morgen", "på fredag") hvis nævnt - de sætter en frist. Drop kommando-ord som "tilføj opgave".' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'complete_task',
+    description: 'Marker en eksisterende opgave på boardet som FÆRDIG/afkrydset. Brug ved "jeg er færdig med X", "X er klaret", "kryds X af", "done med X".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_hint: { type: 'string', description: 'Søgeord fra opgavens titel, så den rette opgave kan findes.' },
+      },
+      required: ['task_hint'],
+    },
+  },
+  {
+    name: 'move_task',
+    description: 'Flyt en eksisterende opgave til en anden hastigheds-bunke på boardet. Brug ved "ryk X til i dag", "flyt X til denne uge", "X kan vente til senere".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_hint: { type: 'string', description: 'Søgeord fra opgavens titel.' },
+        urgency: { type: 'string', enum: ['today', 'week', 'month', 'someday'], description: 'today=i dag, week=denne uge, month=denne måned, someday=senere.' },
+      },
+      required: ['task_hint', 'urgency'],
+    },
+  },
+  {
+    name: 'delete_task',
+    description: 'Slet en eksisterende opgave HELT fra boardet (fjern den, ikke marker færdig). Brug ved "slet opgaven X", "fjern X fra listen", "drop opgaven X".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_hint: { type: 'string', description: 'Søgeord fra opgavens titel.' },
+      },
+      required: ['task_hint'],
+    },
+  },
+  {
+    name: 'list_tasks',
+    description: 'Vis Gustavs åbne opgaver fra boardet. Brug når han SPØRGER hvad han skal lave / hvad der står på listen: "hvilke opgaver har jeg", "hvad skal jeg nå i dag", "hvad står på min to-do". Dette er det STRUKTUREREDE opgave-board, ikke noter i second brain (search_memory).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        urgency: { type: 'string', enum: ['today', 'week', 'month', 'someday'], description: 'Valgfrit filter. Udelad for alle åbne opgaver.' },
+      },
+      required: [],
+    },
+  },
 ]
 
 // Spejler lib/agent-router.ts: stabil del (identitet + lærte fakta + regler) +
@@ -131,8 +187,12 @@ function buildStableSystem(globalFacts = '') {
     '- Kald præcis ét værktøj. Beskriv ikke hvad du har tænkt dig - gør det.',
     '- start_activity/stop_activity KUN når handlingen sker NU (ikke "startede i morges", ikke "starter kl 15").',
     '- create_event er en NY aftale. edit_event/delete_event ændrer/fjerner noget der allerede findes.',
-    '- save_note er for ægte noter/reminders/tanker - ikke en default-skraldespand for ting du ikke gad forstå.',
+    '- save_note er for ægte noter/tanker/observationer/fakta UDEN en handling - ikke en default-skraldespand, og ikke for ting Gustav skal gøre (det er create_task).',
     '- save_memory gemmer et VARIGT faktum/præference/korrektion om Gustav eller et projekt, så assistenten husker det fremover. Brug det når Gustav retter dig eller fortæller noget der bør ændre fremtidig adfærd ("jeg træner om aftenen, ikke morgen", "kald mig Gustav"). IKKE for noter, reminders eller engangsting (det er save_note).',
+    '- Opgave vs note: er beskeden et konkret NÆSTE-SKRIDT Gustav skal GØRE (handlingsverbum: ring, læs, køb, aftal, send, opdater...), så create_task - også når den er pakket som "husk at ringe til mor". Er den en ikke-handling (tanke, idé, observation, fakta han vil huske, vag musing), så save_note.',
+    '- Skel opgave fra aftale: et KLOKKESLÆT -> create_event (kalender); en handling UDEN tidspunkt -> create_task (board). "ring til mor på fredag" (intet klokkeslæt) = create_task; "møde fredag kl 14" = create_event.',
+    '- complete_task markerer en opgave færdig, move_task flytter den til en anden bunke (today/week/month/someday), delete_task fjerner den helt. Alle tre finder opgaven ud fra et søgeord i titlen.',
+    '- Spørger Gustav til sine OPGAVER / sin to-do ("hvilke opgaver har jeg", "hvad skal jeg nå i dag") -> list_tasks (det strukturerede board), ikke search_memory. search_memory er til noter/captures/planer.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
     '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
