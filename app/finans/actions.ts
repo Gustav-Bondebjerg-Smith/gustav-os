@@ -18,7 +18,7 @@ import {
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
-import { isCategory, isSinTag, merchantToken, type TransactionLine } from '@/lib/finance-shared'
+import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine } from '@/lib/finance-shared'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -149,7 +149,9 @@ export async function setCategoryAction(
         const token = tx ? merchantToken(tx.text_raw) : ''
         if (token) {
           await saveFinanceRule(token, cat, sin)
-          alsoUpdated = await applyLearnedCategory(token, cat, sin)
+          // Per-postering-rettelse: kaskadér til ALLE ens posteringer (også sikre),
+          // men rør ikke Gustavs egne tidligere manuelle valg (includeManual=false).
+          alsoUpdated = await applyLearnedCategory(token, cat, sin, { exceptId: id })
         }
       } catch (e) {
         console.error('finans-læring fejlede (kategori sat alligevel):', e)
@@ -176,5 +178,32 @@ export async function getLinesAction(transactionId: string): Promise<Transaction
     return await getTransactionLines(transactionId)
   } catch {
     return []
+  }
+}
+
+// Forretnings-gennemgang: sæt kategori/sin for en HEL forretning (alle posteringer
+// med samme merchantToken) i ét klik. Gemmer reglen + kaskaderer til hele gruppen,
+// inkl. tidligere manuelle (includeManual=true) - her ER beslutningen forretnings-
+// dækkende og bevidst. Returnerer hvor mange posteringer der blev rettet.
+export async function setMerchantCategoryAction(
+  token: string,
+  category: string,
+  sinTag: string | null,
+): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  if (!token) return { ok: false, message: 'Ukendt forretning.' }
+  const cat = isCategory(category) ? category : null
+  const sin = isSinTag(sinTag) ? sinTag : null
+  if (!cat) return { ok: false, message: 'Vælg en kategori.' }
+  try {
+    await saveFinanceRule(token, cat, sin)
+    const n = await applyLearnedCategory(token, cat, sin, { includeManual: true })
+    revalidate()
+    return {
+      ok: true,
+      message: `${n} postering${n === 1 ? '' : 'er'} sat til ${CATEGORY_LABEL[cat]}${sin ? ' · ' + sin : ''}.`,
+    }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }
 }

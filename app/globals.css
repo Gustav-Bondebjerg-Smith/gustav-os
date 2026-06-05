@@ -469,12 +469,12 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .nw-break .neg { color: var(--color-neg); }
 
 /* Fælles mørke form-kontroller for finans */
-.mb input, .mb select, .mb-amt-in, .tx-cat, .upl input[type=file] {
+.mb input, .mb select, .mb-amt-in, .tx-cat, .upl input[type=file], .mrev-search, .mrev-save {
   background: var(--color-bg-2); border: 1px solid var(--color-border);
   color: var(--color-ink-1); border-radius: var(--radius-xs);
   font-family: var(--font-sans); font-size: 12.5px; padding: 6px 8px; outline: none;
 }
-.mb input:focus, .mb select:focus, .tx-cat:focus { border-color: var(--color-accent-line); }
+.mb input:focus, .mb select:focus, .tx-cat:focus, .mrev-search:focus { border-color: var(--color-accent-line); }
 
 /* Manuelle balancer */
 .mb-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--space-4); }
@@ -537,6 +537,27 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .review-card .sect .no { color: var(--color-warn); }
 .review-hint { font-size: 12.5px; color: var(--color-ink-3); margin-bottom: var(--space-3); }
 .txl-note { font-size: 12px; color: var(--color-pos); margin-bottom: 10px; font-family: var(--font-mono); }
+
+/* Gennemgå pr. forretning */
+.pill.warn { color: var(--color-warn); border-color: rgba(240, 179, 74, .32); }
+.mrev { display: flex; flex-direction: column; }
+.mrev-search { width: 100%; margin-bottom: 10px; }
+.mrev-hint { font-size: 12.5px; color: var(--color-ink-3); margin-bottom: var(--space-3); }
+.mrev-list { display: flex; flex-direction: column; }
+.mrev-row { border-bottom: 1px solid var(--color-border); padding: 10px 0; }
+.mrev-row:last-child { border-bottom: none; }
+.mrev-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.mrev-name { font-size: 13px; color: var(--color-ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.mrev-count { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-ink-3); white-space: nowrap; }
+.mrev-amt { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; min-width: 78px; text-align: right; }
+.mrev-amt.neg { color: var(--color-neg); }
+.mrev-amt.pos { color: var(--color-pos); }
+.mrev-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mrev-controls .tx-cat { max-width: 160px; }
+.mrev-save { cursor: pointer; }
+.mrev-save:hover:not(:disabled) { border-color: var(--color-accent-line); color: var(--color-ink-1); }
+.mrev-save:disabled { cursor: default; opacity: .55; }
+.mrev-note { font-size: 11.5px; color: var(--color-pos); font-family: var(--font-mono); }
 
 /* Modul 5: ugentlig review */
 .review-gen { display: inline-flex; align-items: center; gap: 10px; }

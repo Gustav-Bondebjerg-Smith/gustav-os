@@ -11,6 +11,7 @@ import { parseBankCsv } from './finance-csv'
 import { parseStoreboxReceipts } from './finance-storebox'
 import { reconcile } from './finance-reconcile'
 import {
+  isCategory,
   isSinTag,
   merchantToken,
   type Category,
@@ -23,6 +24,7 @@ import {
   type NetWorth,
   type NetWorthPoint,
   type SinSummary,
+  type MerchantGroup,
   type ParsedBankTx,
   type ParsedReceipt,
   type ParsedReceiptLine,
@@ -307,31 +309,39 @@ export async function getTransaction(id: string): Promise<Transaction | null> {
   return data ? rowToTx(data as Record<string, unknown>) : null
 }
 
-// Anvend en lært regel retroaktivt: sæt kategori/sin på ALLE endnu-usikre
-// posteringer (needs_review / 'andet' / ukategoriseret) med samme forretnings-
-// nøgle. Rører ALDRIG en sikkert klassificeret postering. Returnerer antal.
-// Det er "OS'en bliver klogere": ret én Netto -> alle usikre Netto rettes med.
+// Anvend en rettelse retroaktivt på ALLE posteringer med samme forretnings-nøgle -
+// også dem der allerede var "sikkert" klassificeret. Ret én Hiper -> alle Hiper
+// rettes med. Det er bevidst: en forkert AI-kategori (fx Hiper=takeaway) skal kunne
+// fanges og fejes væk på tværs af hele historikken, ikke kun i gennemsyns-køen.
+//
+// Beskyttelse: med includeManual=false (default, fra per-postering-rettelsen)
+// overskrives posteringer Gustav SELV har sat manuelt (category_source='manual')
+// IKKE, så hans egne valg står. Med includeManual=true (fra forretnings-
+// gennemgangen) er rettelsen en bevidst beslutning for hele forretningen og rammer
+// også de manuelle. exceptId springer den netop-klikkede postering over.
+// Returnerer antal rettede.
 export async function applyLearnedCategory(
   token: string,
   category: Category,
   sin: SinTag | null,
+  opts: { exceptId?: string; includeManual?: boolean } = {},
 ): Promise<number> {
   if (!token) return 0
   const sb = getSupabase()
   const candidates: { id: string; text_raw: string }[] = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await sb
-      .from('transactions')
-      .select('id, text_raw')
-      .or('status.eq.needs_review,category.eq.andet,category.is.null')
-      .range(from, from + PAGE - 1)
+    let q = sb.from('transactions').select('id, text_raw').range(from, from + PAGE - 1)
+    if (!opts.includeManual) q = q.neq('category_source', 'manual')
+    const { data, error } = await q
     if (error) throw new Error(`applyLearnedCategory hent-fejl: ${error.message}`)
     const page = (data ?? []) as Record<string, unknown>[]
     for (const r of page) candidates.push({ id: String(r.id), text_raw: String(r.text_raw ?? '') })
     if (page.length < PAGE) break
   }
-  const ids = candidates.filter((c) => merchantToken(c.text_raw) === token).map((c) => c.id)
+  const ids = candidates
+    .filter((c) => c.id !== opts.exceptId && merchantToken(c.text_raw) === token)
+    .map((c) => c.id)
   let updated = 0
   for (let i = 0; i < ids.length; i += 200) {
     const slice = ids.slice(i, i + 200)
@@ -349,6 +359,87 @@ export async function applyLearnedCategory(
     updated += slice.length
   }
   return updated
+}
+
+// Grupperer ALLE posteringer pr. forretnings-nøgle (merchantToken) til
+// forretnings-gennemgangen. Én række pr. forretning, sorteret efter vægt (antal,
+// dernæst samlet forbrug), så Gustav kan rette de tunge forretninger først og
+// stoppe når halen er triviel. Viser dominerende kategori/sin + om gruppen er
+// blandet, så fejl som "Hiper=takeaway" springer i øjnene. Læser kun (ingen skriv).
+export async function listMerchantGroups(): Promise<MerchantGroup[]> {
+  const sb = getSupabase()
+  type Row = { text_raw: string; amount: number; category: string | null; sin_tag: string | null }
+  const rows: Row[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transactions')
+      .select('text_raw, amount, category, sin_tag')
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`listMerchantGroups-fejl: ${error.message}`)
+    const page = (data ?? []) as Record<string, unknown>[]
+    for (const r of page) {
+      rows.push({
+        text_raw: String(r.text_raw ?? ''),
+        amount: Number(r.amount) || 0,
+        category: (r.category as string) ?? null,
+        sin_tag: (r.sin_tag as string) ?? null,
+      })
+    }
+    if (page.length < PAGE) break
+  }
+
+  type Acc = {
+    count: number
+    total: number
+    spend: number
+    cat: Map<string, number>
+    sin: Map<string, number>
+    labels: Map<string, number>
+  }
+  const groups = new Map<string, Acc>()
+  for (const r of rows) {
+    const token = merchantToken(r.text_raw)
+    if (!token) continue
+    let g = groups.get(token)
+    if (!g) {
+      g = { count: 0, total: 0, spend: 0, cat: new Map(), sin: new Map(), labels: new Map() }
+      groups.set(token, g)
+    }
+    g.count++
+    g.total += r.amount
+    g.spend += Math.abs(r.amount)
+    if (r.category) g.cat.set(r.category, (g.cat.get(r.category) ?? 0) + 1)
+    if (r.sin_tag) g.sin.set(r.sin_tag, (g.sin.get(r.sin_tag) ?? 0) + 1)
+    const lab = r.text_raw.trim()
+    if (lab) g.labels.set(lab, (g.labels.get(lab) ?? 0) + 1)
+  }
+
+  const topKey = (m: Map<string, number>): string | null => {
+    let best: string | null = null
+    let n = -1
+    for (const [k, v] of m) if (v > n) { best = k; n = v }
+    return best
+  }
+
+  const out: MerchantGroup[] = []
+  for (const [token, g] of groups) {
+    const domCat = topKey(g.cat)
+    const domSin = topKey(g.sin)
+    out.push({
+      token,
+      label: topKey(g.labels) ?? token,
+      count: g.count,
+      total: Math.round(g.total),
+      spend: g.spend,
+      category: domCat && isCategory(domCat) ? (domCat as Category) : null,
+      sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
+      mixed: g.cat.size > 1,
+      examples: [...g.labels.keys()].slice(0, 3),
+    })
+  }
+  out.sort((a, b) => b.count - a.count || b.spend - a.spend)
+  return out
 }
 
 export async function getTransactionLines(transactionId: string): Promise<TransactionLine[]> {

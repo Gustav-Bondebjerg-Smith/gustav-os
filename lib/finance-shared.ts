@@ -140,6 +140,20 @@ export type SinSummary = {
   amount: number // forbrug denne måned på dette sin_tag
 }
 
+// Én forretning i "gennemgå pr. forretning"-viewet: alle posteringer med samme
+// merchantToken foldet sammen. Klient-sikker (vist i FinanceMerchantReview).
+export type MerchantGroup = {
+  token: string
+  label: string // hyppigste rå tekst, vist til Gustav
+  count: number
+  total: number // sum beløb (negativ = udgift)
+  spend: number // sum |beløb|, til vægtning
+  category: Category | null // dominerende kategori i gruppen
+  sin: SinTag | null // dominerende sin i gruppen
+  mixed: boolean // spænder over flere kategorier
+  examples: string[] // op til 3 eksempel-tekster
+}
+
 // Ét punkt på nettoformue-kurven (et dagligt snapshot). checking = bank-saldo,
 // netWorth = checking + manuelle balancer (historisk antaget = nuværende).
 export type NetWorthPoint = {
