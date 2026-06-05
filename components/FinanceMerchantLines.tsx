@@ -49,6 +49,9 @@ export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
       {note && <p className="txl-note">{note}</p>}
       {items.map((p) => {
         const cur = override[p.key] ?? { category: p.category, sin: p.sin }
+        // Linjer er gemt omvendt (vare positiv, rabat negativ). Vend om ved visning, saa
+        // udgift = roed med minus og rabat = groen uden minus (som forretnings-totalen).
+        const disp = -p.total
         return (
           <div className="mline" key={p.key}>
             <span className="mline-name">{p.label}</span>
@@ -80,7 +83,7 @@ export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
                 </option>
               ))}
             </select>
-            <span className="mline-amt num">{kr(p.total)}</span>
+            <span className={`mline-amt num ${disp < 0 ? 'neg' : 'pos'}`}>{kr(disp)}</span>
           </div>
         )
       })}

@@ -176,7 +176,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
                           </option>
                         ))}
                       </select>
-                      <span className="txln-amt num">{kr(l.amount)}</span>
+                      <span className={`txln-amt num ${-l.amount < 0 ? 'neg' : 'pos'}`}>{kr(-l.amount)}</span>
                     </div>
                   ))
                 )}
