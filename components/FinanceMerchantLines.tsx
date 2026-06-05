@@ -80,7 +80,7 @@ export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
                 </option>
               ))}
             </select>
-            <span className={`mline-amt num ${p.total < 0 ? 'neg' : 'pos'}`}>{kr(p.total)}</span>
+            <span className="mline-amt num">{kr(p.total)}</span>
           </div>
         )
       })}

@@ -572,9 +572,7 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .mline-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-ink-1); }
 .mline-count { font-family: var(--font-mono); font-size: 11px; color: var(--color-ink-3); white-space: nowrap; }
 .mline .tx-cat { max-width: 130px; }
-.mline-amt { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; min-width: 64px; text-align: right; }
-.mline-amt.neg { color: var(--color-neg); }
-.mline-amt.pos { color: var(--color-pos); }
+.mline-amt { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; min-width: 64px; text-align: right; color: var(--color-ink-2); }
 @media (max-width: 620px) {
   .txln { display: flex; flex-wrap: wrap; gap: 6px; }
   .txln-name { flex: 1 1 100%; }
