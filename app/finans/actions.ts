@@ -21,7 +21,8 @@ import {
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
-import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine, type ProductGroup } from '@/lib/finance-shared'
+import { isSinTag, merchantToken, type TransactionLine, type ProductGroup } from '@/lib/finance-shared'
+import { loadCategories, addCategory, deleteCategory } from '@/lib/finance-categories'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -36,6 +37,15 @@ async function authedEmail(): Promise<string | null> {
 function revalidate(): void {
   revalidatePath('/finans')
   revalidatePath('/')
+}
+
+// Valider en kategori-noegle mod den merged liste (faste + Gustavs egne). Returnerer
+// {key,label} eller null (tom/ukendt). Ét lille opslag pr. gem - fint interaktivt.
+async function resolveCat(category: string): Promise<{ key: string; label: string } | null> {
+  if (!category) return null
+  const cats = await loadCategories()
+  const hit = cats.find((c) => c.key === category)
+  return hit ? { key: hit.key, label: hit.label } : null
 }
 
 // Kort proaktiv opsummering på Telegram. Best-effort - må aldrig vælte importen.
@@ -137,7 +147,8 @@ export async function setCategoryAction(
   sinTag: string | null,
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
-  const cat = isCategory(category) ? category : null
+  const hit = await resolveCat(category)
+  const cat = hit?.key ?? null
   const sin = isSinTag(sinTag) ? sinTag : null
   try {
     await setTransactionCategory(id, cat, sin, 'manual')
@@ -195,7 +206,8 @@ export async function setMerchantCategoryAction(
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   if (!token) return { ok: false, message: 'Ukendt forretning.' }
-  const cat = isCategory(category) ? category : null
+  const hit = await resolveCat(category)
+  const cat = hit?.key ?? null
   const sin = isSinTag(sinTag) ? sinTag : null
   if (!cat) return { ok: false, message: 'Vælg en kategori.' }
   try {
@@ -206,7 +218,7 @@ export async function setMerchantCategoryAction(
     revalidate()
     return {
       ok: true,
-      message: `Markeret færdig. ${n} postering${n === 1 ? '' : 'er'} sat til ${CATEGORY_LABEL[cat]}${sin ? ' · ' + sin : ''}.`,
+      message: `Markeret færdig. ${n} postering${n === 1 ? '' : 'er'} sat til ${hit?.label ?? cat}${sin ? ' · ' + sin : ''}.`,
     }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -222,7 +234,7 @@ export async function setLineCategoryAction(
   sinTag: string | null,
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
-  const cat = isCategory(category) ? category : null
+  const cat = (await resolveCat(category))?.key ?? null
   const sin = isSinTag(sinTag) ? sinTag : null
   try {
     await setTransactionLineCategory(lineId, cat, sin)
@@ -252,12 +264,38 @@ export async function setProductLineCategoryAction(
 ): Promise<FinanceActionResult> {
   if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
   if (!key) return { ok: false, message: 'Ukendt vare.' }
-  const cat = isCategory(category) ? category : null
+  const cat = (await resolveCat(category))?.key ?? null
   const sin = isSinTag(sinTag) ? sinTag : null
   try {
     const n = await setProductLineCategory(key, cat, sin)
     revalidate()
     return { ok: true, message: `${n} varelinje${n === 1 ? '' : 'r'} rettet.` }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// Brugerdefinerede kategorier: tilfoej / slet. Paavirker alle kategori-dropdowns OG
+// AI-klassificeringen (nye kategorier puttes i Haiku-prompten). Skriver memory_facts.
+export async function addCategoryAction(label: string): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  try {
+    const res = await addCategory(label)
+    if (!res.ok) return { ok: false, message: res.message }
+    revalidate()
+    return { ok: true, message: 'Kategori tilføjet.' }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export async function deleteCategoryAction(key: string): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  try {
+    const res = await deleteCategory(key)
+    if (!res.ok) return { ok: false, message: res.message }
+    revalidate()
+    return { ok: true }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }

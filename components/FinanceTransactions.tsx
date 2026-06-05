@@ -7,14 +7,12 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronRight, ChevronDown, Receipt } from 'lucide-react'
 import {
-  CATEGORIES,
-  CATEGORY_LABEL,
   SIN_LABEL,
   SIN_TAGS,
-  isCategory,
   isSinTag,
   type Transaction,
   type TransactionLine,
+  type CategoryDef,
 } from '@/lib/finance-shared'
 import { getLinesAction, setCategoryAction, setLineCategoryAction } from '@/app/finans/actions'
 
@@ -28,7 +26,7 @@ function dayLabel(ymd: string): string {
   return m ? `${m[3]}/${m[2]}` : ymd
 }
 
-export function FinanceTransactions({ items }: { items: Transaction[] }) {
+export function FinanceTransactions({ items, categories }: { items: Transaction[]; categories: CategoryDef[] }) {
   const router = useRouter()
   const [openId, setOpenId] = useState<string | null>(null)
   const [linesById, setLinesById] = useState<Record<string, TransactionLine[] | 'loading'>>({})
@@ -52,7 +50,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
   }
 
   async function changeCategory(t: Transaction, category: string) {
-    if (!isCategory(category)) return
+    if (!category) return
     setCatOverride((p) => ({ ...p, [t.id]: category }))
     const res = await setCategoryAction(t.id, category, t.sin_tag)
     if (res.message) setNote(res.message)
@@ -67,11 +65,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
     next: { category?: string; sin?: string },
   ) {
     const category =
-      next.category !== undefined
-        ? isCategory(next.category)
-          ? next.category
-          : null
-        : line.category
+      next.category !== undefined ? (next.category || null) : line.category
     const sin =
       next.sin !== undefined ? (isSinTag(next.sin) ? next.sin : null) : line.sin_tag
     setLinesById((p) => {
@@ -128,9 +122,9 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
                 <option value="" disabled>
                   (ukategoriseret)
                 </option>
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {CATEGORY_LABEL[c]}
+                {categories.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
                   </option>
                 ))}
               </select>
@@ -157,9 +151,9 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
                         aria-label="Vare-kategori"
                       >
                         <option value="">(ukat.)</option>
-                        {CATEGORIES.map((c) => (
-                          <option key={c} value={c}>
-                            {CATEGORY_LABEL[c]}
+                        {categories.map((c) => (
+                          <option key={c.key} value={c.key}>
+                            {c.label}
                           </option>
                         ))}
                       </select>

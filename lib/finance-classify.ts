@@ -12,7 +12,7 @@ import { getSupabase } from './supabase'
 import { snapshotNetWorth } from './finance'
 import { saveMemory, recallForScope } from './memory-facts'
 import {
-  isCategory,
+  CATEGORIES,
   isSinTag,
   merchantToken,
   parseFinanceRule,
@@ -20,8 +20,13 @@ import {
   type Category,
   type SinTag,
 } from './finance-shared'
+import { loadCategories } from './finance-categories'
 
 const FINANCE_SCOPE = 'finance'
+
+// De faste kategori-noegler. Bruges til at validere AI-svar paa VARELINJER (de bruger
+// kun faste kategorier). Transaktioner valideres mod den merged liste i runtime.
+const BUILTIN_CATEGORY_KEYS = new Set<string>(CATEGORIES as readonly string[])
 
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -132,14 +137,14 @@ function extractJsonArray(raw: string): unknown {
 type ClassOut = { category: Category; sin: SinTag | null; confidence: 'high' | 'low' }
 type RawClass = { i?: number; category?: string; sin?: string | null; confidence?: string }
 
-function coerce(arr: RawClass[], n: number, fallback: Category): ClassOut[] {
+function coerce(arr: RawClass[], n: number, fallback: Category, validKeys: Set<string>): ClassOut[] {
   const byI = new Map<number, RawClass>()
   arr.forEach((a, idx) => byI.set(typeof a.i === 'number' ? a.i : idx, a))
   const out: ClassOut[] = []
   for (let i = 0; i < n; i++) {
     const a = byI.get(i)
     out.push({
-      category: isCategory(a?.category) ? (a!.category as Category) : fallback,
+      category: typeof a?.category === 'string' && validKeys.has(a.category) ? a.category : fallback,
       sin: isSinTag(a?.sin) ? (a!.sin as SinTag) : null,
       confidence: a?.confidence === 'low' ? 'low' : 'high',
     })
@@ -149,7 +154,7 @@ function coerce(arr: RawClass[], n: number, fallback: Category): ClassOut[] {
 
 // =============================== TRANSAKTIONER ===============================
 
-const TX_SYSTEM = [
+const TX_SYSTEM_BASE = [
   'Du kategoriserer danske bank-posteringer for Gustav (medicinstuderende, Odense).',
   'Hver postering: text (kort), detail (forretning/by), amount (negativ=udgift, positiv=indkomst).',
   'Returnér KUN et JSON-array, ét objekt pr. input i SAMME rækkefølge:',
@@ -173,15 +178,32 @@ const TX_SYSTEM = [
   'confidence: "low" hvis du er i reel tvivl om kategorien (ukendt eller tvetydig forretning), ellers "high".',
 ].join('\n')
 
+// Byg AI-prompten med Gustavs egne kategorier oven paa de faste, saa Haiku OGSAA kan
+// auto-vaelge dem paa ukendte forretninger (Gustavs valg: "ogsaa AI'en"). Uden egne
+// kategorier er prompten byte-identisk med foer -> uaendret adfaerd i normaltilfaeldet.
+function buildTxSystem(custom: { key: string; label: string }[]): string {
+  if (custom.length === 0) return TX_SYSTEM_BASE
+  const extraKeys = custom.map((c) => c.key).join(', ')
+  const extraLines = custom.map((c) => `- ${c.key}: ${c.label} (brugerdefineret kategori).`)
+  return [
+    TX_SYSTEM_BASE,
+    `Derudover er disse brugerdefinerede kategorier OGSAA gyldige: ${extraKeys}.`,
+    ...extraLines,
+    'Vaelg en brugerdefineret kategori naar den passer tydeligt bedre end de faste.',
+  ].join('\n')
+}
+
 async function classifyTransactionsBatch(
   items: { text: string; detail: string; amount: number }[],
+  system: string,
+  validKeys: Set<string>,
 ): Promise<ClassOut[]> {
   if (items.length === 0) return []
   const user = JSON.stringify(
     items.map((it, i) => ({ i, text: it.text, detail: it.detail.slice(0, 100), amount: it.amount })),
   )
-  const raw = await haiku(TX_SYSTEM, user, 3600)
-  return coerce(extractJsonArray(raw) as RawClass[], items.length, 'andet')
+  const raw = await haiku(system, user, 3600)
+  return coerce(extractJsonArray(raw) as RawClass[], items.length, 'andet', validKeys)
 }
 
 type TxRow = { id: string; text_raw: string; detail: string; amount: number }
@@ -229,6 +251,11 @@ export async function classifyUnmatchedTransactions(
   // Anvend lærte regler FØRST: kendte forretninger kategoriseres deterministisk
   // (ingen AI), så systemet bliver klogere af Gustavs tidligere rettelser.
   const rules = await loadFinanceRules()
+  // Kategorier (faste + Gustavs egne) -> dynamisk prompt + gyldige noegler til
+  // validering af AI-svaret. Loades én gang pr. koersel.
+  const cats = await loadCategories()
+  const txSystem = buildTxSystem(cats.filter((c) => !c.builtin))
+  const txValidKeys = new Set(cats.map((c) => c.key))
   const ruleHits: { row: TxRow; category: Category; sin: SinTag | null }[] = []
   const aiRows: TxRow[] = []
   for (const r of rows) {
@@ -264,6 +291,8 @@ export async function classifyUnmatchedTransactions(
     try {
       const cls = await classifyTransactionsBatch(
         batch.map((r) => ({ text: r.text_raw, detail: r.detail, amount: r.amount })),
+        txSystem,
+        txValidKeys,
       )
       await Promise.all(
         batch.map((r, i) =>
@@ -364,7 +393,7 @@ async function classifyLinesBatch(
     linjer: lines.map((l, i) => ({ i, name: l.text, amount: l.amount })),
   })
   const raw = await haiku(LINE_SYSTEM, user, 1500)
-  return coerce(extractJsonArray(raw) as RawClass[], lines.length, 'dagligvarer')
+  return coerce(extractJsonArray(raw) as RawClass[], lines.length, 'dagligvarer', BUILTIN_CATEGORY_KEYS)
 }
 
 // Klassificér alle uklassificerede varelinjer, grupperet pr. transaktion (så

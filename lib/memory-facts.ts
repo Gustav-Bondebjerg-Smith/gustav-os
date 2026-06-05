@@ -75,6 +75,18 @@ export async function saveMemory(args: {
   return data as MemoryFact
 }
 
+// Slet ét faktum (scope+key). Bruges til at fjerne en brugerdefineret kategori.
+// Idempotent: ingen fejl hvis rækken ikke findes.
+export async function deleteMemory(args: { scope: string; key: string }): Promise<void> {
+  const sb = getSupabase()
+  const { error } = await sb
+    .from('memory_facts')
+    .delete()
+    .eq('scope', args.scope)
+    .eq('key', args.key)
+  if (error) throw new Error(`memory_facts delete-fejl: ${error.message}`)
+}
+
 async function loadAllForScope(scope: string): Promise<MemoryFact[]> {
   const sb = getSupabase()
   // Stabil ordning (type, key) er vigtig: prompt-blokken skal være byte-identisk

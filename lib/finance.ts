@@ -11,7 +11,6 @@ import { parseBankCsv } from './finance-csv'
 import { parseStoreboxReceipts } from './finance-storebox'
 import { reconcile } from './finance-reconcile'
 import {
-  isCategory,
   isSinTag,
   merchantToken,
   productKey,
@@ -449,7 +448,7 @@ export async function listMerchantGroups(
       count: g.count,
       total: Math.round(g.total),
       spend: g.spend,
-      category: domCat && isCategory(domCat) ? (domCat as Category) : null,
+      category: domCat || null,
       sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
       mixed: g.cat.size > 1,
       examples: [...g.labels.keys()].slice(0, 3),
@@ -541,7 +540,7 @@ export async function getMerchantLineGroups(token: string): Promise<ProductGroup
       label: topKey(g.labels) ?? key,
       count: g.count,
       total: Math.round(g.total),
-      category: domCat && isCategory(domCat) ? (domCat as Category) : null,
+      category: domCat || null,
       sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
       mixed: g.cat.size > 1,
     })

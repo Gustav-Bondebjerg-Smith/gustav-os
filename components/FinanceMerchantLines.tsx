@@ -7,15 +7,13 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  CATEGORIES,
-  CATEGORY_LABEL,
   SIN_TAGS,
   SIN_LABEL,
-  isCategory,
   isSinTag,
   type Category,
   type SinTag,
   type ProductGroup,
+  type CategoryDef,
 } from '@/lib/finance-shared'
 import { setProductLineCategoryAction } from '@/app/finans/actions'
 
@@ -25,7 +23,7 @@ function kr(n: number): string {
 
 type Cur = { category: Category | null; sin: SinTag | null }
 
-export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
+export function FinanceMerchantLines({ items, categories }: { items: ProductGroup[]; categories: CategoryDef[] }) {
   const router = useRouter()
   const [override, setOverride] = useState<Record<string, Cur>>({})
   const [note, setNote] = useState<string | null>(null)
@@ -33,7 +31,7 @@ export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
   async function change(p: ProductGroup, next: { category?: string; sin?: string }) {
     const cur = override[p.key] ?? { category: p.category, sin: p.sin }
     const category =
-      next.category !== undefined ? (isCategory(next.category) ? next.category : null) : cur.category
+      next.category !== undefined ? (next.category || null) : cur.category
     const sin = next.sin !== undefined ? (isSinTag(next.sin) ? next.sin : null) : cur.sin
     setOverride((o) => ({ ...o, [p.key]: { category, sin } }))
     const res = await setProductLineCategoryAction(p.key, category ?? '', sin)
@@ -64,9 +62,9 @@ export function FinanceMerchantLines({ items }: { items: ProductGroup[] }) {
               aria-label="Vare-kategori"
             >
               <option value="">(ukat.)</option>
-              {CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {CATEGORY_LABEL[c]}
+              {categories.map((c) => (
+                <option key={c.key} value={c.key}>
+                  {c.label}
                 </option>
               ))}
             </select>

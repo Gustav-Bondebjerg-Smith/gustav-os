@@ -15,8 +15,11 @@ export const CATEGORIES = [
   'indkomst',
   'andet',
 ] as const
-export type Category = (typeof CATEGORIES)[number]
-export const CATEGORY_LABEL: Record<Category, string> = {
+// En kategori-vaerdi er en fri streng (noegle). De faste staar i CATEGORIES ovenfor;
+// Gustav kan tilfoeje egne via lib/finance-categories. Valideres i runtime (mod den
+// merged liste), ikke i typen - derfor string og ikke et lukket union.
+export type Category = string
+export const CATEGORY_LABEL: Record<string, string> = {
   dagligvarer: 'Dagligvarer',
   ude: 'Ude/restaurant',
   transport: 'Transport',
@@ -28,9 +31,15 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   indkomst: 'Indkomst',
   andet: 'Andet',
 }
+// Er v en af de FASTE kategorier? (Brugerdefinerede valideres server-side mod den
+// merged liste, ikke her - finance-shared er klient-sikker uden DB-adgang.)
 export function isCategory(v: unknown): v is Category {
   return typeof v === 'string' && (CATEGORIES as readonly string[]).includes(v)
 }
+
+// En kategori i UI'et: noegle + visningsnavn + om den er fast (kan ikke slettes).
+// Bygges server-side (faste + Gustavs egne) og sendes som prop til klient-selects.
+export type CategoryDef = { key: string; label: string; builtin: boolean }
 
 // Syndeudgifter: altid-synlige dårlige vaner. Konfigurerbar liste. En postering/
 // varelinje kan have et sin_tag UDEN at det ændrer kategorien (fx alkohol-linje i
@@ -234,7 +243,9 @@ export function parseFinanceRule(content: string): { category: Category | null; 
   const cm = (content || '').match(/kategori=([a-zæøå]+)/i)
   const sm = (content || '').match(/sin=([a-zæøå]+)/i)
   return {
-    category: cm && isCategory(cm[1]) ? (cm[1] as Category) : null,
+    // Kategori-noeglen kan vaere brugerdefineret -> valider IKKE mod de faste her.
+    // Reglen blev skrevet med en gyldig noegle (saveFinanceRule), saa den er paalidelig.
+    category: cm ? cm[1].toLowerCase() : null,
     sin: sm && isSinTag(sm[1]) ? (sm[1] as SinTag) : null,
   }
 }

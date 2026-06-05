@@ -18,12 +18,15 @@ import {
   type ManualBalance,
   type Transaction,
   type MerchantGroup,
+  type CategoryDef,
 } from '@/lib/finance'
 import { FinanceManualBalances } from '@/components/FinanceManualBalances'
 import { FinanceUpload } from '@/components/FinanceUpload'
 import { FinanceTransactions } from '@/components/FinanceTransactions'
 import { FinanceMerchantReview } from '@/components/FinanceMerchantReview'
+import { FinanceCategories } from '@/components/FinanceCategories'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
+import { loadCategories } from '@/lib/finance-categories'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,6 +39,7 @@ export default async function FinansPage() {
   let balances: ManualBalance[] = []
   let txs: Transaction[] = []
   let groups: MerchantGroup[] = []
+  let categories: CategoryDef[] = []
   let history: NetWorthPoint[] = []
   let loadError: string | null = null
   let unclassified = 0
@@ -47,6 +51,7 @@ export default async function FinansPage() {
     balances = await listManualBalances()
     txs = await listTransactions({ limit: 80 })
     groups = await listMerchantGroups({ includeReviewed: true })
+    categories = await loadCategories()
     unclassified = txs.filter((t) => t.category === null).length
   } catch (e) {
     loadError = e instanceof Error ? e.message : String(e)
@@ -142,9 +147,18 @@ export default async function FinansPage() {
             <div className="sect"><span className="no">★</span><span className="ttl">Gennemgå pr. forretning</span></div>
             <span className="tag num">{groups.filter((g) => !g.reviewed).length} forretninger</span>
           </div>
-          <FinanceMerchantReview items={groups} />
+          <FinanceMerchantReview items={groups} categories={categories} />
         </section>
       )}
+
+      {/* Kategorier: tilfoej/slet egne (bruges i alle kategori-menuer + AI-klassificering) */}
+      <section className="card fin-block">
+        <div className="card-head">
+          <div className="sect"><span className="no">+</span><span className="ttl">Kategorier</span></div>
+          <span className="tag num">{categories.length}</span>
+        </div>
+        <FinanceCategories items={categories} />
+      </section>
 
       {/* Manuelle balancer */}
       <section className="card fin-block">
@@ -170,7 +184,7 @@ export default async function FinansPage() {
           <div className="sect"><span className="no">E</span><span className="ttl">Posteringer</span></div>
           <span className="tag num">{unclassified > 0 ? `${unclassified} ukategoriseret` : 'seneste 80'}</span>
         </div>
-        <FinanceTransactions items={txs} />
+        <FinanceTransactions items={txs} categories={categories} />
       </section>
 
       <p className="board-foot">

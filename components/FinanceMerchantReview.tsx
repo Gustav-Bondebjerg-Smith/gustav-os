@@ -10,14 +10,13 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import {
-  CATEGORIES,
-  CATEGORY_LABEL,
   SIN_TAGS,
   SIN_LABEL,
   type Category,
   type SinTag,
   type ProductGroup,
   type MerchantGroup,
+  type CategoryDef,
 } from '@/lib/finance-shared'
 import { setMerchantCategoryAction, getMerchantLineGroupsAction } from '@/app/finans/actions'
 import { FinanceMerchantLines } from './FinanceMerchantLines'
@@ -28,7 +27,7 @@ function kr(n: number): string {
 
 type RowState = { category: Category | ''; sin: SinTag | ''; saving: boolean; note: string | null }
 
-export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
+export function FinanceMerchantReview({ items, categories }: { items: MerchantGroup[]; categories: CategoryDef[] }) {
   const router = useRouter()
   const [query, setQuery] = useState('')
   const [showReviewed, setShowReviewed] = useState(false)
@@ -153,9 +152,9 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
                   <option value="" disabled>
                     (vælg kategori)
                   </option>
-                  {CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {CATEGORY_LABEL[c]}
+                  {categories.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
                     </option>
                   ))}
                 </select>
@@ -183,7 +182,7 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
                   {lineGroups === 'loading' || lineGroups === undefined ? (
                     <p className="empty">Henter varer…</p>
                   ) : (
-                    <FinanceMerchantLines items={lineGroups} />
+                    <FinanceMerchantLines items={lineGroups} categories={categories} />
                   )}
                 </div>
               )}
