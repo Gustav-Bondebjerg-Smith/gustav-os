@@ -10,11 +10,13 @@ import {
   CATEGORIES,
   CATEGORY_LABEL,
   SIN_LABEL,
+  SIN_TAGS,
   isCategory,
+  isSinTag,
   type Transaction,
   type TransactionLine,
 } from '@/lib/finance-shared'
-import { getLinesAction, setCategoryAction } from '@/app/finans/actions'
+import { getLinesAction, setCategoryAction, setLineCategoryAction } from '@/app/finans/actions'
 
 function kr(n: number): string {
   const v = Math.round(n * 100) / 100
@@ -31,6 +33,10 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
   const [openId, setOpenId] = useState<string | null>(null)
   const [linesById, setLinesById] = useState<Record<string, TransactionLine[] | 'loading'>>({})
   const [note, setNote] = useState<string | null>(null)
+  // Optimistisk kategori pr. postering: i udfoldningen kommer items fra en lazy
+  // klient-hentning der IKKE gen-hentes ved router.refresh, så uden override ville
+  // select'en snappe tilbage til den gamle vaerdi.
+  const [catOverride, setCatOverride] = useState<Record<string, string>>({})
 
   async function toggle(t: Transaction) {
     if (openId === t.id) {
@@ -47,8 +53,36 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
 
   async function changeCategory(t: Transaction, category: string) {
     if (!isCategory(category)) return
+    setCatOverride((p) => ({ ...p, [t.id]: category }))
     const res = await setCategoryAction(t.id, category, t.sin_tag)
     if (res.message) setNote(res.message)
+    router.refresh()
+  }
+
+  // Ret EN varelinje (kategori og/eller sin). Optimistisk patch af linjen + refresh
+  // (saa synde-kortet opdateres). Skriver KUN linjen - ingen forretnings-regel.
+  async function changeLine(
+    txId: string,
+    line: TransactionLine,
+    next: { category?: string; sin?: string },
+  ) {
+    const category =
+      next.category !== undefined
+        ? isCategory(next.category)
+          ? next.category
+          : null
+        : line.category
+    const sin =
+      next.sin !== undefined ? (isSinTag(next.sin) ? next.sin : null) : line.sin_tag
+    setLinesById((p) => {
+      const arr = p[txId]
+      if (!arr || arr === 'loading') return p
+      return {
+        ...p,
+        [txId]: arr.map((x) => (x.id === line.id ? { ...x, category, sin_tag: sin } : x)),
+      }
+    })
+    await setLineCategoryAction(line.id, category ?? '', sin)
     router.refresh()
   }
 
@@ -87,7 +121,7 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
               </div>
               <select
                 className="tx-cat"
-                value={t.category ?? ''}
+                value={catOverride[t.id] ?? t.category ?? ''}
                 onChange={(e) => changeCategory(t, e.target.value)}
                 aria-label="Kategori"
               >
@@ -116,7 +150,32 @@ export function FinanceTransactions({ items }: { items: Transaction[] }) {
                   lines.map((l) => (
                     <div className="txln" key={l.id}>
                       <span className="txln-name">{l.text}</span>
-                      {l.sin_tag && <span className="pill sin sm">{SIN_LABEL[l.sin_tag]}</span>}
+                      <select
+                        className="tx-cat"
+                        value={l.category ?? ''}
+                        onChange={(e) => changeLine(t.id, l, { category: e.target.value })}
+                        aria-label="Vare-kategori"
+                      >
+                        <option value="">(ukat.)</option>
+                        {CATEGORIES.map((c) => (
+                          <option key={c} value={c}>
+                            {CATEGORY_LABEL[c]}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="tx-cat"
+                        value={l.sin_tag ?? ''}
+                        onChange={(e) => changeLine(t.id, l, { sin: e.target.value })}
+                        aria-label="Vare-sin"
+                      >
+                        <option value="">(ingen sin)</option>
+                        {SIN_TAGS.map((s) => (
+                          <option key={s} value={s}>
+                            {SIN_LABEL[s]}
+                          </option>
+                        ))}
+                      </select>
                       <span className="txln-amt num">{kr(l.amount)}</span>
                     </div>
                   ))

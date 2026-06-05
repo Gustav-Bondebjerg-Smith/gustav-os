@@ -152,6 +152,7 @@ export type MerchantGroup = {
   sin: SinTag | null // dominerende sin i gruppen
   mixed: boolean // spænder over flere kategorier
   examples: string[] // op til 3 eksempel-tekster
+  reviewed: boolean // alle posteringer er manuelt sat = forretningen er gennemgaaet
 }
 
 // Ét punkt på nettoformue-kurven (et dagligt snapshot). checking = bank-saldo,

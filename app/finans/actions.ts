@@ -11,14 +11,16 @@ import {
   upsertManualBalance,
   deleteManualBalance,
   setTransactionCategory,
+  setTransactionLineCategory,
   getTransactionLines,
   getTransaction,
+  getMerchantTransactions,
   applyLearnedCategory,
   backfillNetWorthSnapshots,
 } from '@/lib/finance'
 import { saveFinanceRule } from '@/lib/finance-classify'
 import { sendTelegramMessage } from '@/lib/telegram'
-import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine } from '@/lib/finance-shared'
+import { isCategory, isSinTag, merchantToken, CATEGORY_LABEL, type TransactionLine, type Transaction } from '@/lib/finance-shared'
 import type { FinanceActionResult, ImportResult } from './state'
 
 async function authedEmail(): Promise<string | null> {
@@ -197,13 +199,46 @@ export async function setMerchantCategoryAction(
   if (!cat) return { ok: false, message: 'Vælg en kategori.' }
   try {
     await saveFinanceRule(token, cat, sin)
-    const n = await applyLearnedCategory(token, cat, sin, { includeManual: true })
+    // source:'manual' paa HELE forretningen = den er gennemgaaet og forsvinder fra
+    // listen (kun denne forretnings-handling saetter alle til manual).
+    const n = await applyLearnedCategory(token, cat, sin, { includeManual: true, source: 'manual' })
     revalidate()
     return {
       ok: true,
-      message: `${n} postering${n === 1 ? '' : 'er'} sat til ${CATEGORY_LABEL[cat]}${sin ? ' · ' + sin : ''}.`,
+      message: `Markeret færdig. ${n} postering${n === 1 ? '' : 'er'} sat til ${CATEGORY_LABEL[cat]}${sin ? ' · ' + sin : ''}.`,
     }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// Manuel rettelse af EN varelinje (fx cola -> sodavand). Skriver KUN linjen: ingen
+// forretnings-regel, ingen kaskade (en linje er et konkret koeb). Synde-kortet
+// opdateres af getSinSummary, som laeser varelinje-sin direkte.
+export async function setLineCategoryAction(
+  lineId: string,
+  category: string,
+  sinTag: string | null,
+): Promise<FinanceActionResult> {
+  if (!(await authedEmail())) return { ok: false, message: 'Ikke logget ind.' }
+  const cat = isCategory(category) ? category : null
+  const sin = isSinTag(sinTag) ? sinTag : null
+  try {
+    await setTransactionLineCategory(lineId, cat, sin)
+    revalidate()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// Lazy-load alle posteringer for en forretning (udfoldningen i gennemgangen).
+// Read-only -> ingen revalidate; fejler bloedt til tom liste.
+export async function getMerchantTransactionsAction(token: string): Promise<Transaction[]> {
+  if (!(await authedEmail())) return []
+  try {
+    return await getMerchantTransactions(token)
+  } catch {
+    return []
   }
 }

@@ -10,7 +10,6 @@ import {
   getNetWorthHistory,
   listManualBalances,
   listTransactions,
-  listReviewQueue,
   listMerchantGroups,
   SIN_LABEL,
   type NetWorth,
@@ -36,7 +35,6 @@ export default async function FinansPage() {
   let sins: SinSummary[] = []
   let balances: ManualBalance[] = []
   let txs: Transaction[] = []
-  let reviewItems: Transaction[] = []
   let groups: MerchantGroup[] = []
   let history: NetWorthPoint[] = []
   let loadError: string | null = null
@@ -48,8 +46,7 @@ export default async function FinansPage() {
     history = await getNetWorthHistory()
     balances = await listManualBalances()
     txs = await listTransactions({ limit: 80 })
-    reviewItems = await listReviewQueue()
-    groups = await listMerchantGroups()
+    groups = await listMerchantGroups({ includeReviewed: true })
     unclassified = txs.filter((t) => t.category === null).length
   } catch (e) {
     loadError = e instanceof Error ? e.message : String(e)
@@ -143,23 +140,9 @@ export default async function FinansPage() {
         <section className="card fin-block">
           <div className="card-head">
             <div className="sect"><span className="no">★</span><span className="ttl">Gennemgå pr. forretning</span></div>
-            <span className="tag num">{groups.length} forretninger</span>
+            <span className="tag num">{groups.filter((g) => !g.reviewed).length} forretninger</span>
           </div>
           <FinanceMerchantReview items={groups} />
-        </section>
-      )}
-
-      {/* Til gennemsyn (spørge-loop): usikre/ukategoriserede posteringer */}
-      {reviewItems.length > 0 && (
-        <section className="card fin-block review-card">
-          <div className="card-head">
-            <div className="sect"><span className="no">!</span><span className="ttl">Til gennemsyn</span></div>
-            <span className="tag num">{reviewItems.length} usikre</span>
-          </div>
-          <p className="review-hint">
-            Vælg en kategori, så lærer OS&apos;en forretningen og retter lignende posteringer automatisk.
-          </p>
-          <FinanceTransactions items={reviewItems} />
         </section>
       )}
 

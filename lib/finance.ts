@@ -324,7 +324,7 @@ export async function applyLearnedCategory(
   token: string,
   category: Category,
   sin: SinTag | null,
-  opts: { exceptId?: string; includeManual?: boolean } = {},
+  opts: { exceptId?: string; includeManual?: boolean; source?: CategorySource } = {},
 ): Promise<number> {
   if (!token) return 0
   const sb = getSupabase()
@@ -350,7 +350,7 @@ export async function applyLearnedCategory(
       .update({
         category,
         sin_tag: sin,
-        category_source: 'rule',
+        category_source: opts.source ?? 'rule',
         status: 'classified',
         updated_at: nowIso(),
       })
@@ -366,15 +366,23 @@ export async function applyLearnedCategory(
 // dernæst samlet forbrug), så Gustav kan rette de tunge forretninger først og
 // stoppe når halen er triviel. Viser dominerende kategori/sin + om gruppen er
 // blandet, så fejl som "Hiper=takeaway" springer i øjnene. Læser kun (ingen skriv).
-export async function listMerchantGroups(): Promise<MerchantGroup[]> {
+export async function listMerchantGroups(
+  opts: { includeReviewed?: boolean } = {},
+): Promise<MerchantGroup[]> {
   const sb = getSupabase()
-  type Row = { text_raw: string; amount: number; category: string | null; sin_tag: string | null }
+  type Row = {
+    text_raw: string
+    amount: number
+    category: string | null
+    sin_tag: string | null
+    source: string | null
+  }
   const rows: Row[] = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await sb
       .from('transactions')
-      .select('text_raw, amount, category, sin_tag')
+      .select('text_raw, amount, category, sin_tag, category_source')
       .range(from, from + PAGE - 1)
     if (error) throw new Error(`listMerchantGroups-fejl: ${error.message}`)
     const page = (data ?? []) as Record<string, unknown>[]
@@ -384,6 +392,7 @@ export async function listMerchantGroups(): Promise<MerchantGroup[]> {
         amount: Number(r.amount) || 0,
         category: (r.category as string) ?? null,
         sin_tag: (r.sin_tag as string) ?? null,
+        source: (r.category_source as string) ?? null,
       })
     }
     if (page.length < PAGE) break
@@ -391,6 +400,7 @@ export async function listMerchantGroups(): Promise<MerchantGroup[]> {
 
   type Acc = {
     count: number
+    manualCount: number
     total: number
     spend: number
     cat: Map<string, number>
@@ -403,10 +413,11 @@ export async function listMerchantGroups(): Promise<MerchantGroup[]> {
     if (!token) continue
     let g = groups.get(token)
     if (!g) {
-      g = { count: 0, total: 0, spend: 0, cat: new Map(), sin: new Map(), labels: new Map() }
+      g = { count: 0, manualCount: 0, total: 0, spend: 0, cat: new Map(), sin: new Map(), labels: new Map() }
       groups.set(token, g)
     }
     g.count++
+    if (r.source === 'manual') g.manualCount++
     g.total += r.amount
     g.spend += Math.abs(r.amount)
     if (r.category) g.cat.set(r.category, (g.cat.get(r.category) ?? 0) + 1)
@@ -424,6 +435,10 @@ export async function listMerchantGroups(): Promise<MerchantGroup[]> {
 
   const out: MerchantGroup[] = []
   for (const [token, g] of groups) {
+    // "Gennemgaaet" = hver postering for forretningen er manuelt sat (kun
+    // forretnings-Faerdig goer det). Skjules som standard; vis-faerdige tager dem med.
+    const reviewed = g.count > 0 && g.manualCount === g.count
+    if (reviewed && !opts.includeReviewed) continue
     const domCat = topKey(g.cat)
     const domSin = topKey(g.sin)
     out.push({
@@ -436,10 +451,43 @@ export async function listMerchantGroups(): Promise<MerchantGroup[]> {
       sin: domSin && isSinTag(domSin) ? (domSin as SinTag) : null,
       mixed: g.cat.size > 1,
       examples: [...g.labels.keys()].slice(0, 3),
+      reviewed,
     })
   }
   out.sort((a, b) => b.count - a.count || b.spend - a.spend)
   return out
+}
+
+// Alle posteringer for EN forretning (token), til udfoldningen i forretnings-
+// gennemgangen. Samme scan+filter som applyLearnedCategory (token udregnes i kode,
+// ingen stored kolonne). Kvitteringer foerst (de har varelinjer at rette), saa
+// nyeste; cap saa en tung forretning ikke henter hele historikken.
+export async function getMerchantTransactions(
+  token: string,
+  opts: { limit?: number } = {},
+): Promise<Transaction[]> {
+  if (!token) return []
+  const sb = getSupabase()
+  const matched: Transaction[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transactions')
+      .select(TX_COLS)
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`getMerchantTransactions-fejl: ${error.message}`)
+    const page = (data ?? []) as Record<string, unknown>[]
+    for (const r of page) {
+      if (merchantToken(String(r.text_raw ?? '')) === token) matched.push(rowToTx(r))
+    }
+    if (page.length < PAGE) break
+  }
+  matched.sort(
+    (a, b) =>
+      Number(!!b.storebox_receipt_id) - Number(!!a.storebox_receipt_id) ||
+      b.booked_date.localeCompare(a.booked_date),
+  )
+  return matched.slice(0, opts.limit ?? 60)
 }
 
 export async function getTransactionLines(transactionId: string): Promise<TransactionLine[]> {
@@ -463,6 +511,23 @@ export async function getTransactionLines(transactionId: string): Promise<Transa
       sin_tag: (row.sin_tag as SinTag) ?? null,
     }
   })
+}
+
+// Manuel rettelse af EN varelinje (fx "cola" -> sin sodavand). transaction_lines
+// har hverken category_source, status eller updated_at - vi roerer kun category +
+// sin_tag. Skriver bevidst INGEN forretnings-regel (en linje er et konkret koeb,
+// ikke en regel for hele forretningen).
+export async function setTransactionLineCategory(
+  lineId: string,
+  category: Category | null,
+  sinTag: SinTag | null,
+): Promise<void> {
+  const sb = getSupabase()
+  const { error } = await sb
+    .from('transaction_lines')
+    .update({ category, sin_tag: sinTag })
+    .eq('id', lineId)
+  if (error) throw new Error(`setTransactionLineCategory-fejl: ${error.message}`)
 }
 
 // =============================== NETTOFORMUE ===============================

@@ -521,7 +521,8 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .tx-amt.neg { color: var(--color-neg); }
 .tx-amt.pos { color: var(--color-pos); }
 .tx-lines { padding: 2px 0 12px 32px; display: flex; flex-direction: column; gap: 6px; }
-.txln { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 9px; align-items: center; }
+.txln { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 9px; align-items: center; }
+.txln .tx-cat { max-width: 120px; }
 .txln-name { font-size: 12.5px; color: var(--color-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .txln-amt { font-family: var(--font-mono); font-size: 12px; color: var(--color-ink-3); text-align: right; white-space: nowrap; }
 .pill.sin { color: var(--color-neg); border-color: var(--color-neg-line); }
@@ -558,6 +559,17 @@ button.fh-check { padding: 0; background: none; cursor: pointer; }
 .mrev-save:hover:not(:disabled) { border-color: var(--color-accent-line); color: var(--color-ink-1); }
 .mrev-save:disabled { cursor: default; opacity: .55; }
 .mrev-note { font-size: 11.5px; color: var(--color-pos); font-family: var(--font-mono); }
+.mrev-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.mrev-bar .mrev-search { margin-bottom: 0; flex: 1; }
+.mrev-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-ink-3); white-space: nowrap; cursor: pointer; }
+.mrev-row.open { background: color-mix(in srgb, var(--color-accent) 5%, transparent); border-radius: var(--radius-xs); }
+.mrev-drill { padding: 4px 0 10px 26px; }
+.pill.done { color: var(--color-pos); border-color: var(--color-pos-line, rgba(74, 222, 128, .3)); }
+@media (max-width: 620px) {
+  .txln { display: flex; flex-wrap: wrap; gap: 6px; }
+  .txln-name { flex: 1 1 100%; }
+  .mrev-drill { padding-left: 8px; }
+}
 
 /* Modul 5: ugentlig review */
 .review-gen { display: inline-flex; align-items: center; gap: 10px; }

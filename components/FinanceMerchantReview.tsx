@@ -2,11 +2,13 @@
 
 // "Gennemgå pr. forretning" på /finans (Modul 4). Folder ALLE posteringer sammen
 // pr. forretning (merchantToken) til én række, sorteret efter vægt. Gustav retter
-// kategori + sin og trykker Gem -> setMerchantCategoryAction kaskaderer til hele
-// forretningen (også de "sikre"), så fx Hiper=takeaway rettes på tværs af hele
-// historikken i ét klik. Søgefelt til hurtigt at finde en forretning.
+// kategori + sin og trykker Færdig -> setMerchantCategoryAction sætter HELE
+// forretningen til manuel (kaskaderer + markerer den gennemgået, så den forsvinder
+// fra listen). Hver række kan foldes ud til sine posteringer + varelinjer (genbruger
+// FinanceTransactions), så fx cola under Netto kan tagges som sodavand individuelt.
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { ChevronRight, ChevronDown } from 'lucide-react'
 import {
   CATEGORIES,
   CATEGORY_LABEL,
@@ -14,9 +16,11 @@ import {
   SIN_LABEL,
   type Category,
   type SinTag,
+  type Transaction,
   type MerchantGroup,
 } from '@/lib/finance-shared'
-import { setMerchantCategoryAction } from '@/app/finans/actions'
+import { setMerchantCategoryAction, getMerchantTransactionsAction } from '@/app/finans/actions'
+import { FinanceTransactions } from './FinanceTransactions'
 
 function kr(n: number): string {
   return Math.round(n).toLocaleString('da-DK') + ' kr'
@@ -27,7 +31,10 @@ type RowState = { category: Category | ''; sin: SinTag | ''; saving: boolean; no
 export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
   const router = useRouter()
   const [query, setQuery] = useState('')
+  const [showReviewed, setShowReviewed] = useState(false)
   const [state, setState] = useState<Record<string, RowState>>({})
+  const [openToken, setOpenToken] = useState<string | null>(null)
+  const [txByToken, setTxByToken] = useState<Record<string, Transaction[] | 'loading'>>({})
 
   // Effektiv værdi for en række: lokal override hvis sat, ellers det dominerende
   // fra serveren.
@@ -47,6 +54,19 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
     })
   }
 
+  async function toggleExpand(token: string) {
+    if (openToken === token) {
+      setOpenToken(null)
+      return
+    }
+    setOpenToken(token)
+    if (!txByToken[token]) {
+      setTxByToken((p) => ({ ...p, [token]: 'loading' }))
+      const txs = await getMerchantTransactionsAction(token)
+      setTxByToken((p) => ({ ...p, [token]: txs }))
+    }
+  }
+
   async function save(g: MerchantGroup) {
     const r = rowFor(g)
     if (!r.category) {
@@ -55,45 +75,69 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
     }
     patch(g.token, { saving: true, note: null })
     const res = await setMerchantCategoryAction(g.token, r.category, r.sin || null)
-    patch(g.token, { saving: false, note: res.message ?? (res.ok ? 'Gemt.' : 'Kunne ikke gemme.') })
+    patch(g.token, { saving: false, note: res.message ?? (res.ok ? 'Færdig.' : 'Kunne ikke gemme.') })
     if (res.ok) router.refresh()
   }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter(
-      (g) =>
+    return items.filter((g) => {
+      if (!showReviewed && g.reviewed) return false
+      if (!q) return true
+      return (
         g.label.toLowerCase().includes(q) ||
         g.token.includes(q) ||
-        g.examples.some((e) => e.toLowerCase().includes(q)),
-    )
-  }, [items, query])
+        g.examples.some((e) => e.toLowerCase().includes(q))
+      )
+    })
+  }, [items, query, showReviewed])
 
   if (items.length === 0) return <p className="empty">Ingen posteringer at gennemgå endnu.</p>
 
   return (
     <div className="mrev">
-      <input
-        className="mrev-search"
-        type="search"
-        placeholder="Søg forretning (fx hiper, netto)…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        aria-label="Søg forretning"
-      />
+      <div className="mrev-bar">
+        <input
+          className="mrev-search"
+          type="search"
+          placeholder="Søg forretning (fx hiper, netto)…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Søg forretning"
+        />
+        <label className="mrev-toggle">
+          <input
+            type="checkbox"
+            checked={showReviewed}
+            onChange={(e) => setShowReviewed(e.target.checked)}
+          />
+          vis færdige
+        </label>
+      </div>
       <p className="mrev-hint">
-        {filtered.length} forretninger · sorteret efter vægt. Ret kategori/sin og tryk Gem - så rettes
-        ALLE posteringer for forretningen, også de allerede klassificerede.
+        {filtered.length} forretninger · sorteret efter vægt. Fold ud og ret varelinjer (fx cola -&gt;
+        sodavand) FØR du trykker Færdig - Færdig sætter kategori/sin for hele forretningen og fjerner
+        den fra listen.
       </p>
 
       <div className="mrev-list">
         {filtered.map((g) => {
           const r = rowFor(g)
+          const isOpen = openToken === g.token
+          const txs = txByToken[g.token]
           return (
-            <div className="mrev-row" key={g.token}>
+            <div className={`mrev-row ${isOpen ? 'open' : ''}`} key={g.token}>
               <div className="mrev-top">
+                <button
+                  type="button"
+                  className="tx-exp"
+                  onClick={() => toggleExpand(g.token)}
+                  aria-label={isOpen ? 'Skjul posteringer' : 'Vis posteringer'}
+                >
+                  {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                </button>
                 <span className="mrev-name">{g.label}</span>
+                {g.reviewed && <span className="pill done">færdig</span>}
                 {g.mixed && <span className="pill warn">blandet</span>}
                 {g.sin && <span className="pill sin">{SIN_LABEL[g.sin]}</span>}
                 <span className="mrev-count num">{g.count}×</span>
@@ -129,10 +173,20 @@ export function FinanceMerchantReview({ items }: { items: MerchantGroup[] }) {
                   ))}
                 </select>
                 <button type="button" className="mrev-save" onClick={() => save(g)} disabled={r.saving}>
-                  {r.saving ? 'Gemmer…' : 'Gem'}
+                  {r.saving ? 'Gemmer…' : 'Færdig'}
                 </button>
                 {r.note && <span className="mrev-note">{r.note}</span>}
               </div>
+
+              {isOpen && (
+                <div className="mrev-drill">
+                  {txs === 'loading' || txs === undefined ? (
+                    <p className="empty">Henter posteringer…</p>
+                  ) : (
+                    <FinanceTransactions items={txs} />
+                  )}
+                </div>
+              )}
             </div>
           )
         })}
