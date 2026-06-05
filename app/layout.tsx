@@ -42,8 +42,16 @@ export default async function RootLayout({
     <html
       lang="da"
       className={`${plexSans.variable} ${plexMono.variable} ${newsreader.variable} dark`}
+      suppressHydrationWarning
     >
       <body>
+        {/* No-flash: sæt privatlivs-sløringen FØR paint, så nettoformue/synder
+            aldrig blinker frem hvis sløringen var slået til. Synk med PrivacyToggle. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{if(localStorage.getItem('fin-private')==='1')document.documentElement.classList.add('fin-private')}catch(e){}`,
+          }}
+        />
         {!isLogin && (
           <header className="topbar">
             <Link href="/" className="brand">

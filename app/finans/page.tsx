@@ -26,6 +26,7 @@ import { FinanceTransactions } from '@/components/FinanceTransactions'
 import { FinanceMerchantReview } from '@/components/FinanceMerchantReview'
 import { FinanceCategories } from '@/components/FinanceCategories'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
+import { PrivacyToggle } from '@/components/PrivacyToggle'
 import { loadCategories } from '@/lib/finance-categories'
 
 export const dynamic = 'force-dynamic'
@@ -67,7 +68,10 @@ export default async function FinansPage() {
           <span className="vh-no">03</span>
           <span className="vh-ttl">Finans</span>
         </div>
-        <span className="vh-sub num">{nw ? fmt(nw.netWorth) + ' kr' : '—'}</span>
+        <div className="vh-r">
+          <span className="vh-sub num" data-private>{nw ? fmt(nw.netWorth) + ' kr' : '—'}</span>
+          <PrivacyToggle />
+        </div>
       </div>
 
       {loadError && <p className="empty">Kunne ikke hente finans-data: {loadError}</p>}

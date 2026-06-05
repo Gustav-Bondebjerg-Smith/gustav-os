@@ -10,6 +10,7 @@ import { getNetWorth, getSinSummary, getNetWorthHistory, SIN_LABEL, type NetWort
 import { Card } from '@/components/Card'
 import { SessionCard } from '@/components/SessionCard'
 import { NetWorthCurve } from '@/components/NetWorthCurve'
+import { PrivacyToggle } from '@/components/PrivacyToggle'
 import { getLatestProductivity, type ProductivitySnapshot } from '@/lib/productivity'
 import { Check, AlertTriangle } from 'lucide-react'
 
@@ -140,7 +141,17 @@ export default async function HomePage() {
       <SessionCard />
 
       {/* 03 FINANS (rigtige tal fra bank-CSV + Storebox) */}
-      <Card id="finans" no="03" title="Finans" tag={<span className="tag live">Live</span>}>
+      <Card
+        id="finans"
+        no="03"
+        title="Finans"
+        tag={
+          <div className="card-tools">
+            <PrivacyToggle />
+            <span className="tag live">Live</span>
+          </div>
+        }
+      >
         {nw ? (
           <>
             <Link className="fin-link" href="/finans">
