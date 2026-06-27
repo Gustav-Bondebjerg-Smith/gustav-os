@@ -10,6 +10,7 @@ import { classify, VALID_AREAS, type Classification } from './capture'
 import { createTaskFromCapture, completeTask, moveTask, deleteTask, listTasks, URGENCIES, URGENCY_LABEL, isUrgency, type Task } from './tasks'
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
+import { suggestMeal } from './meals'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
@@ -1899,6 +1900,30 @@ async function clearClarification(chatId: number): Promise<void> {
   }
 }
 
+// Mad-forslag. Read-mostly (samme undtagelse fra double-gate som search_memory):
+// suggestMeal laeser kataloget + laerte fakta og returnerer en konkret opskrift.
+// Den eneste skrivning er at en GENERERET opskrift gemmes tilbage i kataloget, og
+// den er best-effort inde i lib/meals.ts, saa en fejl der aldrig blokerer svaret.
+async function handleAgentSuggestMeal(
+  msg: TelegramMessage,
+  meal: string,
+  constraints: string
+): Promise<HandleResult> {
+  await sendChatAction(msg.chat.id)
+  try {
+    const { reply } = await suggestMeal({
+      meal: meal || 'aftensmad',
+      constraints: constraints || undefined,
+    })
+    await sendMessage(msg.chat.id, reply)
+    return { status: 'processed', reason: 'agent_suggested_meal' }
+  } catch (e) {
+    console.error('suggest_meal fejlede:', e)
+    await sendMessage(msg.chat.id, 'Kunne ikke finde på et mad-forslag lige nu. Prøv igen om lidt.')
+    return { status: 'processed', reason: 'agent_meal_failed' }
+  }
+}
+
 async function dispatchViaAgent(
   msg: TelegramMessage,
   text: string,
@@ -2023,6 +2048,11 @@ async function dispatchViaAgent(
     case 'list_tasks': {
       const urgency = typeof input.urgency === 'string' ? input.urgency.trim() : ''
       return handleAgentTaskList(msg, urgency)
+    }
+    case 'suggest_meal': {
+      const meal = typeof input.meal === 'string' ? input.meal.trim() : ''
+      const constraints = typeof input.constraints === 'string' ? input.constraints.trim() : ''
+      return handleAgentSuggestMeal(msg, meal, constraints)
     }
     default:
       console.warn('agent-router: ukendt værktøj', routed.tool)

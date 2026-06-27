@@ -112,6 +112,27 @@ export const TOOLS: AnthropicTool[] = [
     },
   },
   {
+    name: 'suggest_meal',
+    description:
+      'Foreslå hvad Gustav skal lave at spise (typisk aftensmad, men også frokost/morgenmad/snack). Brug når han SPØRGER om et mad-forslag eller en opskrift: "hvad foreslår du jeg laver til aftensmad", "find en opskrift med kylling", "hvad skal jeg spise i dag", "noget hurtigt og proteinrigt i aften". Returnerer en konkret opskrift (fra kataloget eller nygenereret). Et mad-spørgsmål er ALDRIG search_memory.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        meal: {
+          type: 'string',
+          enum: ['morgenmad', 'frokost', 'aftensmad', 'snack'],
+          description: 'Hvilket måltid. Udelad hvis uklart (handleren bruger aftensmad som default).',
+        },
+        constraints: {
+          type: 'string',
+          description:
+            'Gustavs egne ønsker fra beskeden, ordret: ingrediens ("med kylling"), tid ("noget hurtigt"), eller stil ("ekstra protein", "comfort food"). Udelad hvis intet nævnt.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'save_note',
     description:
       'Gem beskeden som en note i second brain. Det RETTE valg for IKKE-handlinger: tanker, ideer, observationer og fakta/info Gustav vil huske. Det er IKKE en skraldespand, og IKKE for ting Gustav skal GØRE - et konkret næste-skridt (også "husk at gøre X") er en opgave (create_task).',
@@ -252,6 +273,8 @@ function buildStableSystem(globalFacts: string): string {
     '- Skel opgave fra aftale: et KLOKKESLÆT -> create_event (kalender); en handling UDEN tidspunkt -> create_task (board). "ring til mor på fredag" (intet klokkeslæt) = create_task; "møde fredag kl 14" = create_event.',
     '- complete_task markerer en opgave færdig, move_task flytter den til en anden bunke (today/week/month/someday), delete_task fjerner den helt. Alle tre finder opgaven ud fra et søgeord i titlen.',
     '- Spørger Gustav til sine OPGAVER / sin to-do ("hvilke opgaver har jeg", "hvad skal jeg nå i dag") -> list_tasks (det strukturerede board), ikke search_memory. search_memory er til noter/captures/planer.',
+    '- suggest_meal er til MAD: når Gustav spørger hvad han skal spise eller beder om en opskrift ("hvad foreslår du til aftensmad", "en opskrift med kylling", "noget hurtigt i aften"). Et mad-spørgsmål er ALDRIG search_memory og ALDRIG save_note.',
+    '- Retter Gustav en VARIG mad-præference/allergi/mål ("jeg spiser ikke svinekød", "foreslå mere protein", "allergisk mod nødder") -> save_memory, ikke suggest_meal. suggest_meal er kun selve forslaget; varige fakta hører i save_memory og bruges så af suggest_meal næste gang.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
     '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',
