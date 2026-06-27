@@ -24,6 +24,8 @@ export interface Recipe {
   source?: 'generated' | 'manual'
   kcal: number | null
   protein_g: number | null
+  carbs_g: number | null
+  fat_g: number | null
   total_minutes: number | null
   servings: number | null
   ingredients: string[]
@@ -125,6 +127,8 @@ function rowToRecipe(row: Record<string, unknown>): Recipe {
     source: row.source === 'manual' ? 'manual' : 'generated',
     kcal: numOrNull(row.kcal),
     protein_g: numOrNull(row.protein_g),
+    carbs_g: numOrNull(row.carbs_g),
+    fat_g: numOrNull(row.fat_g),
     total_minutes: numOrNull(row.total_minutes),
     servings: numOrNull(row.servings),
     ingredients: Array.isArray(row.ingredients) ? (row.ingredients as unknown[]).map(String) : [],
@@ -185,6 +189,8 @@ async function saveRecipe(r: Recipe): Promise<string | null> {
         source: r.source ?? 'generated',
         kcal: r.kcal,
         protein_g: r.protein_g,
+        carbs_g: r.carbs_g,
+        fat_g: r.fat_g,
         total_minutes: r.total_minutes,
         servings: r.servings,
         ingredients: r.ingredients,
@@ -209,7 +215,8 @@ async function generateRecipe(
 ): Promise<Recipe> {
   const system = [
     "Du er Gustav OS' kok. Lav ÉN konkret dansk hverdagsopskrift til én person.",
-    'MAKRO-KRAV (vigtigst): retten skal vaere proteintung. Sigt efter 3000 kcal og 200 g protein for HELE retten (ca. 15 kcal pr. gram protein). Den behoever ikke ramme praecist, men ratioen skal holde: protein skal udgoere ca. 25-30% af kalorierne. Hellere lidt for meget protein end for lidt.',
+    'MAKRO-KRAV (vigtigst): sigt efter et energi-split paa ca. 40% kulhydrat / 30% protein / 30% fedt, OG hold proteinet HOEJT i gram (proteintung). Det er kravet, ikke et fast totaltal. Laas dig ikke til en bestemt total: lav gerne en stoerre portion (fx en HEL kylling) der giver flere maaltider, og skaler alle ingredienser samlet op saa splittet holder. Humlen: meget protein UDEN at fedtet loeber op - hold fedtet nede (fjern fx kyllingeskind, beskeden olie, undgaa floede) og brug magre proteinkilder (skyr 0,2%, hytteost, aeggehvider, magert koed), og baer kalorier paa kulhydrat (kartofler, ris, gryn, rugbroed).',
+    'Angiv kcal, protein_g, carbs_g og fat_g for HELE retten, plus servings = antal maaltider, saa baade split og pr-maaltid kan udregnes.',
     'Brug almindelige danske dagligvarer. Ingen eksotiske specialindkoeb.',
     factsBlock || '',
     factsBlock
@@ -217,7 +224,7 @@ async function generateRecipe(
       : '',
     'Skriv aldrig em-dashes. Brug punktum eller bindestreg.',
     'Returnér KUN ét JSON-objekt og intet andet, paa formen:',
-    '{"title": str, "meal": "morgenmad|frokost|aftensmad|snack", "kcal": int (hele retten), "protein_g": int (hele retten), "total_minutes": int, "servings": int, "ingredients": [str med maengde], "steps": [str], "tags": [str]}',
+    '{"title": str, "meal": "morgenmad|frokost|aftensmad|snack", "kcal": int (hele retten), "protein_g": int, "carbs_g": int, "fat_g": int, "total_minutes": int, "servings": int, "ingredients": [str med maengde], "steps": [str], "tags": [str]}',
   ]
     .filter(Boolean)
     .join('\n')
@@ -225,7 +232,7 @@ async function generateRecipe(
   const user = JSON.stringify({
     maaltid: meal,
     oenske: constraints || null,
-    krav: 'proteintung, ratio ca. 3000 kcal / 200 g protein for hele retten',
+    krav: 'split ca. 40% kulhydrat / 30% protein / 30% fedt, protein hoejt i gram; skaler gerne op til flere maaltider',
   })
 
   const parsed = extractJsonObject<Partial<Recipe>>(await anthropic(system, user))
@@ -238,6 +245,8 @@ async function generateRecipe(
     source: 'generated',
     kcal: numOrNull(parsed.kcal),
     protein_g: numOrNull(parsed.protein_g),
+    carbs_g: numOrNull(parsed.carbs_g),
+    fat_g: numOrNull(parsed.fat_g),
     total_minutes: numOrNull(parsed.total_minutes),
     servings: numOrNull(parsed.servings),
     ingredients: (parsed.ingredients as unknown[]).map(String).filter(Boolean),
@@ -254,6 +263,12 @@ function formatReply(r: Recipe, fresh: boolean): string {
   if (r.protein_g != null) macro.push(`${r.protein_g} g protein`)
   if (r.total_minutes != null) macro.push(`${r.total_minutes} min`)
   if (macro.length) lines.push(macro.join(' / '))
+  if (r.carbs_g != null && r.protein_g != null && r.fat_g != null) {
+    lines.push(`Makro: ${r.carbs_g} g kulhydrat / ${r.protein_g} g protein / ${r.fat_g} g fedt`)
+  }
+  if (r.servings && r.servings > 1 && r.kcal != null && r.protein_g != null) {
+    lines.push(`ca. ${Math.round(r.kcal / r.servings)} kcal / ${Math.round(r.protein_g / r.servings)} g protein pr. maaltid (${r.servings} maaltider)`)
+  }
   lines.push('')
   lines.push('Ingredienser:')
   for (const ing of r.ingredients) lines.push(`- ${ing}`)
