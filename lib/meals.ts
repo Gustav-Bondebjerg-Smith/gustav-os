@@ -52,10 +52,13 @@ function numOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n) : null
 }
 
-// Normaliseret titel til dedup (saa naer-dubletter ikke fylder kataloget op).
+// Normaliseret tekst (Danish-aware: aa/ae/oe) til dedup + navne-opslag i kataloget.
 function normalizeTitle(t: string): string {
   return t
     .toLowerCase()
+    .replace(/å/g, 'aa')
+    .replace(/æ/g, 'ae')
+    .replace(/ø/g, 'oe')
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
@@ -278,6 +281,35 @@ function formatReply(r: Recipe, fresh: boolean): string {
   return lines.join('\n')
 }
 
+// Naar Gustav navngiver en konkret ret ('har du hoensesuppe-opskriften', 'den med kylling')
+// matcher vi mod kataloget paa titel/tags (Danish-aware) og henter den GEMTE opskrift i stedet
+// for at generere. Best-effort: fejl/intet match -> null (saa genereres der i stedet).
+async function findCatalogByText(text: string): Promise<Recipe | null> {
+  try {
+    const qTokens = normalizeTitle(text)
+      .split(' ')
+      .filter((t) => t.length >= 5)
+    if (!qTokens.length) return null
+    const sb = getSupabase()
+    const { data, error } = await sb.from('recipes').select('*')
+    if (error) throw new Error(error.message)
+    let best: { recipe: Recipe; score: number } | null = null
+    for (const row of (data || []) as Record<string, unknown>[]) {
+      const recipe = rowToRecipe(row)
+      const hay = normalizeTitle(`${recipe.title} ${recipe.tags.join(' ')}`)
+      const score = qTokens.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0)
+      if (score > 0 && (!best || score > best.score)) best = { recipe, score }
+    }
+    return best?.recipe ?? null
+  } catch (e) {
+    console.error('findCatalogByText fejlede (ignoreret):', e)
+    return null
+  }
+}
+
+// Ord der signalerer at Gustav vil have noget NYT (spring katalog-opslag over, generer).
+const NEW_INTENT = /(?<![\p{L}])(ny|nyt|nye|anderledes|overrask|noget andet)(?![\p{L}])/iu
+
 // Public: suggestMeal({ meal, constraints }) -> { reply, recipe, fromCatalog }.
 // Uden konkret oenske OG med noget i kataloget: genbrug mindst nyligt foreslaaet
 // (variation). Med et oenske eller tomt katalog: generer en ny (constrained af
@@ -289,6 +321,19 @@ export async function suggestMeal(args: {
   const meal = normalizeMeal(args.meal || 'aftensmad')
   const constraints = args.constraints?.trim() || undefined
 
+  const wantsNew = constraints ? NEW_INTENT.test(constraints) : false
+
+  // 1) Navngiver han en konkret ret vi allerede har (og vil ikke have noget nyt)?
+  //    -> hent den GEMTE opskrift fra kataloget i stedet for at generere en ny.
+  if (constraints && !wantsNew) {
+    const match = await findCatalogByText(constraints)
+    if (match?.id) {
+      await bumpSuggested(match.id)
+      return { reply: formatReply(match, false), recipe: match, fromCatalog: true }
+    }
+  }
+
+  // 2) Intet konkret oenske + noget i kataloget -> variation (mindst nyligt foreslaaet).
   if (!constraints) {
     const fromCat = await pickFromCatalog(meal)
     if (fromCat?.id) {
@@ -297,7 +342,7 @@ export async function suggestMeal(args: {
     }
   }
 
-  // Laerte fakta (kost/allergi/maal m.m.) -> generatorens haarde krav.
+  // 3) Ellers: generer constrained af makro + Gustavs laerte kost-fakta, og gem tilbage.
   const factsBlock = formatGlobalForPrompt(await recallGlobal())
   const recipe = await generateRecipe(meal, constraints, factsBlock)
   const id = await saveRecipe(recipe)
