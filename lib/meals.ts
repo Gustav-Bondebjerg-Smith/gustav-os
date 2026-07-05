@@ -5,9 +5,12 @@
 // opskrifter gemmes tilbage i kataloget, saa det vokser af sig selv. Server-only,
 // alt gaar via service_role (getSupabase), praecis som resten af systemet.
 //
-// MAKRO-KRAV (Gustavs valg): hver ret er proteintung. Maal-ratio ca. 15 kcal pr.
-// gram protein (3000 kcal / 200 g protein hvis hele retten var dagens eneste mad).
-// Behoever ikke ramme praecist, men ratioen skal holde (protein ~25-30% af kcal).
+// MAKRO-KRAV (Gustavs valg) - protein foerst, saa fordeling:
+// (1) RAM PROTEIN FOERST: ca. 200 g protein pr. 3000 kcal (~15 kcal/g protein,
+//     protein ~27% af energien) hvis hele retten var dagens eneste mad.
+// (2) Fyld DEREFTER resten af kalorierne op med kulhydrat:fedt = 4:3 (fra
+//     40/30-splittet), saa fedtet aldrig forsvinder.
+// (3) Overproducer IKKE protein. Ratioen er kravet, ikke et fast totaltal.
 import 'server-only'
 import { getSupabase } from './supabase'
 import { recallGlobal, formatGlobalForPrompt } from './memory-facts'
@@ -218,7 +221,11 @@ async function generateRecipe(
 ): Promise<Recipe> {
   const system = [
     "Du er Gustav OS' kok. Lav ÉN konkret dansk hverdagsopskrift til én person.",
-    'MAKRO-KRAV (vigtigst): sigt efter et energi-split paa ca. 40% kulhydrat / 30% protein / 30% fedt, OG hold proteinet HOEJT i gram (proteintung). Det er kravet, ikke et fast totaltal. Laas dig ikke til en bestemt total: lav gerne en stoerre portion (fx en HEL kylling) der giver flere maaltider, og skaler alle ingredienser samlet op saa splittet holder. Humlen: meget protein UDEN at fedtet loeber op - hold fedtet nede (fjern fx kyllingeskind, beskeden olie, undgaa floede) og brug magre proteinkilder (skyr 0,2%, hytteost, aeggehvider, magert koed), og baer kalorier paa kulhydrat (kartofler, ris, gryn, rugbroed).',
+    'MAKRO-KRAV (vigtigst) - foelg DENNE raekkefoelge og disse KONKRETE gram-tal. Referencedag = 3000 kcal svarer til: ~200 g protein, ~310 g kulhydrat, ~103 g fedt. (Logikken bag: protein FOERST som anker paa ~200 g, DEREFTER resten fordelt kulhydrat:fedt = 4:3.) Skaler alle TRE gram-tal samlet op/ned til din portionsstoerrelse, men HOLD forholdet imellem dem.',
+    'FEDT-GULV (kritisk): fedt skal give ca. 30% af kcal, dvs. fat_g*9 skal vaere ca. 0,30*kcal. Lav ALDRIG en fedtfattig ret med masser af kulhydrat og lidt fedt - det er den hyppigste fejl. Tjek dig selv: hvis fat_g er meget under kcal/29, saa haev fedtet (mere olie/aeg/fede oste/noedder) og saenk kulhydratet tilsvarende.',
+    'Overproducer IKKE protein: naar ~200 g protein pr. 3000 kcal er ramt, gaar ekstra kalorier til kulhydrat+fedt (4:3), ikke til mere protein. Ratioen er kravet, ikke et fast totaltal - lav gerne en stoerre portion (fx en HEL kylling) med flere servings og skaler alt samlet op.',
+    'KONSISTENS: kcal SKAL svare til 4*protein_g + 4*carbs_g + 9*fat_g (indenfor ~5%). Regn efter foer du svarer.',
+    'Humlen: naa proteinmaalet UDEN at fedtet forsvinder - brug magre proteinkilder (kylling uden skind, skyr 0,2%, hytteost, magert koed), baer kalorier paa kulhydrat (kartofler, ris, gryn), OG hold et reelt fedt-indhold (olie, aeg, fede oste/noedder i moderat maengde).',
     'Angiv kcal, protein_g, carbs_g og fat_g for HELE retten, plus servings = antal maaltider, saa baade split og pr-maaltid kan udregnes.',
     'Brug almindelige danske dagligvarer. Ingen eksotiske specialindkoeb.',
     factsBlock || '',
@@ -235,7 +242,7 @@ async function generateRecipe(
   const user = JSON.stringify({
     maaltid: meal,
     oenske: constraints || null,
-    krav: 'split ca. 40% kulhydrat / 30% protein / 30% fedt, protein hoejt i gram; skaler gerne op til flere maaltider',
+    krav: 'referencedag 3000 kcal = ~200 g protein / ~310 g kulhydrat / ~103 g fedt (skaler samlet, hold forholdet); fedt-gulv ~30% af kcal (ingen fedtfattig-med-masser-af-kulhydrat); overproducer ikke protein; kcal = 4*P+4*C+9*F',
   })
 
   const parsed = extractJsonObject<Partial<Recipe>>(await anthropic(system, user))
