@@ -90,12 +90,12 @@ export const TOOLS = [
   },
   {
     name: 'suggest_meal',
-    description: 'Foreslå hvad Gustav skal lave at spise (typisk aftensmad, men også frokost/morgenmad/snack). Brug når han SPØRGER om et mad-forslag eller en opskrift: "hvad foreslår du jeg laver til aftensmad", "find en opskrift med kylling", "noget hurtigt og proteinrigt i aften". Returnerer en konkret opskrift (fra kataloget eller nygenereret). Brug det OGSÅ når han spørger til en KONKRET ret/opskrift han kan have fået før: "har du opskriften på hønsesuppe", "vis mig den hønsesuppe", "hvad var den ret du foreslog" (så hentes den gemte opskrift). Et mad-spørgsmål er ALDRIG search_memory.',
+    description: 'Foreslå hvad Gustav skal lave at spise (typisk aftensmad, men også frokost/morgenmad/snack). Brug når han SPØRGER om et mad-forslag eller en opskrift: "hvad foreslår du jeg laver til aftensmad", "find en opskrift med kylling", "noget hurtigt og proteinrigt i aften". Returnerer en konkret opskrift (fra kataloget eller nygenereret). Brug det OGSÅ når han spørger til en KONKRET ret/opskrift han kan have fået før: "har du opskriften på hønsesuppe", "vis mig den hønsesuppe", "hvad var den ret du foreslog" (så hentes den gemte opskrift). Brug det OGSÅ når han vil TILPASSE/SKALERE en kendt ret til sit faktiske indkøb: "tilpas den bagte oksekødsret, jeg har 800g oksekød 12%", "skalér hønsesuppen til 6 portioner" (så puttes både rettens navn OG mængderne i constraints). Et mad-spørgsmål er ALDRIG search_memory.',
     input_schema: {
       type: 'object',
       properties: {
         meal: { type: 'string', enum: ['morgenmad', 'frokost', 'aftensmad', 'snack'], description: 'Hvilket måltid. Udelad hvis uklart (default aftensmad).' },
-        constraints: { type: 'string', description: 'Gustavs egne ønsker ordret: ingrediens ("med kylling"), tid ("noget hurtigt"), stil ("ekstra protein"). Udelad hvis intet nævnt.' },
+        constraints: { type: 'string', description: 'Gustavs egne ønsker ordret: ingrediens ("med kylling"), tid ("noget hurtigt"), stil ("ekstra protein"). Ved opslag/tilpasning af en KENDT ret: medtag både rettens navn OG mængderne ordret ("den bagte oksekødsret, jeg har 800 g oksekød 12%", "skalér hønsesuppen til 6"). Udelad hvis intet nævnt.' },
       },
       required: [],
     },
@@ -207,6 +207,7 @@ function buildStableSystem(globalFacts = '') {
     '- Spørger Gustav til sine OPGAVER / sin to-do ("hvilke opgaver har jeg", "hvad skal jeg nå i dag") -> list_tasks (det strukturerede board), ikke search_memory. search_memory er til noter/captures/planer.',
     '- suggest_meal er til MAD: når Gustav spørger hvad han skal spise eller beder om en opskrift ("hvad foreslår du til aftensmad", "en opskrift med kylling", "noget hurtigt i aften"). Et mad-spørgsmål er ALDRIG search_memory og ALDRIG save_note.',
     '- Spørger Gustav til en KONKRET ret eller opskrift, også en han har fået før ("har du opskriften på hønsesuppe", "vis den hønsesuppe", "hvad var den ret du foreslog") -> suggest_meal; den henter den gemte opskrift. Mad/opskrifter er ALDRIG search_memory, heller ikke når spørgsmålet starter med "har du" eller "hvad var".',
+    '- Vil Gustav TILPASSE/SKALERE en kendt ret til sit faktiske indkøb ("tilpas den bagte ret, jeg har 800g oksekød 12%", "skalér hønsesuppen til 6 portioner", "ret den til med 1 kg kylling") -> suggest_meal med constraints der indeholder BÅDE rettens navn OG mængderne. Det er ikke search_memory.',
     '- Retter Gustav en VARIG mad-præference/allergi/mål ("jeg spiser ikke svinekød", "foreslå mere protein", "allergisk mod nødder") -> save_memory, ikke suggest_meal. suggest_meal er kun selve forslaget; varige fakta hører i save_memory og bruges så af suggest_meal næste gang.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
