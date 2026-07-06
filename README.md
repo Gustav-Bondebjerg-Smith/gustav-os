@@ -70,8 +70,10 @@ npm_config_cache=/tmp/gustav-npm-cache npm install
 - `lib/memory.ts` - server-side embeddings + idempotent `memory_chunks` storage.
 - `lib/memory-facts.ts` - lærende fakta-lag (`memory_facts`): save/recall af små, selvlærte fakta. Genbruger `embedText`.
 - `lib/ask.ts` - TypeScript-port af ask-flowet til dashboard server action.
-- `lib/telegram-webhook.ts` - server-side webhook-flow for Telegram capture, veto og `/ask`.
-- `lib/cron.ts` - `CRON_SECRET`-auth + DB-lock til serverless cron.
+- `lib/agent-router-core.mjs` - routerens ENE hjerne (tools + prompt + routeMessage). Delt af `lib/agent-router.ts` (prod-facade) og `scripts/agent-router.mjs` (replay/CLI).
+- `lib/telegram-webhook.ts` - webhook-INDGANGEN: claim/mark, veto, kommandoer, triage + routing-cascade. Splittet 2026-07-06; domænerne bor i `lib/telegram-shared.ts` (typer/API/transskription), `lib/telegram-calendar.ts`, `lib/telegram-activity.ts`, `lib/telegram-capture.ts`, `lib/telegram-recall.ts` og `lib/telegram-agent.ts` (router-dispatch).
+- `lib/cron.ts` - `CRON_SECRET`-auth + DB-lock til serverless cron (+ puls til vagthunden i `cron_runs`).
+- `lib/health.ts` - vagthunden: dagligt tjek af bankdata-friskhed (30 dage), kategoriseringskø og cron-puls. Flager kun på Telegram når noget er galt.
 - `lib/calendar.ts` - server-side Google Calendar read/write helper.
 - `lib/actions-runner.ts` - udfører due actions efter veto-vindue.
 - `lib/proactive.ts` - ugentligt mønster-flag (morgen-/aftenbrief afskaffet 2026-06-03).
@@ -132,6 +134,7 @@ Cron endpoints:
 - `/api/cron/finance-classify` - drainer finans-kategoriseringskøen + dagligt nettoformue-snapshot (dagligt + hvert kvarter via pg_cron, migration `0014`).
 - `/api/cron/review` - ugentlig review søndag aften til Telegram + `/review`.
 - `/api/cron/productivity` - dagligt produktivitets-snapshot (produktivitet + dækning over 30 dage) til operatør-kortet.
+- `/api/cron/health` - vagthunden (dagligt 05:30 UTC via pg_cron, migration `0019`): flager forældet bankdata (>30 dage), ophobet kategoriseringskø og døde cron-jobs på Telegram. Grøn dag = stilhed.
 
 Alle kræver `Authorization: Bearer <CRON_SECRET>`.
 

@@ -246,11 +246,18 @@ export async function reconcileUnmatched(): Promise<ReconcileDbResult> {
     if (!m.tx) continue
     const txId = txIdByIndex[m.txIndex]
     const receiptId = m.receipt.receiptId
-    const { error: e1 } = await sb
+    // Claim-guard mod parallel kørsel (manuel upload + cron kan overlappe):
+    // opdatér KUN hvis kvitteringen stadig er umatchet, og tjek at en række
+    // faktisk blev ramt. Ellers har en anden kørsel taget den - spring over,
+    // så varelinjerne ikke indsættes dobbelt. Migration 0019 håndhæver desuden
+    // 1:1 med et unikt index på matched_transaction_id.
+    const { data: claimed, error: e1 } = await sb
       .from('storebox_receipts')
       .update({ matched_transaction_id: txId })
       .eq('receipt_id', receiptId)
-    if (e1) continue
+      .is('matched_transaction_id', null)
+      .select('id')
+    if (e1 || !claimed?.length) continue
     await sb
       .from('transactions')
       .update({ storebox_receipt_id: receiptId, updated_at: nowIso() })

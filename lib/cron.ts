@@ -41,7 +41,16 @@ export async function withCronLock<T>(
   if (!data) return { locked: false }
 
   try {
-    return { locked: true, result: await fn() }
+    const result = await fn()
+    // Puls til vagthunden (/api/cron/health): registrér vellykket kørsel i
+    // cron_runs (migration 0019). Best effort - en puls-fejl må aldrig vælte
+    // selve jobbet, så den logges kun. Kaster fn(), skrives ingen puls.
+    const { error: pulseError } = await sb.from('cron_runs').upsert(
+      { name, last_success: new Date().toISOString(), updated_at: new Date().toISOString() },
+      { onConflict: 'name' }
+    )
+    if (pulseError) console.error(`cron_runs puls-fejl (${name}):`, pulseError.message)
+    return { locked: true, result }
   } finally {
     const { error: releaseError } = await sb.rpc('release_cron_lock', {
       lock_name: name,

@@ -9,7 +9,7 @@
 // mapper værktøj -> label og scorer mod kolonnen "intended".
 import './load-env.mjs'
 import { readFileSync } from 'node:fs'
-import { routeMessage } from './agent-router.mjs'
+import { routeMessage, ROUTER_MODEL } from './agent-router.mjs'
 
 // Værktøj -> label (omvendt af verberne i routeren).
 const TOOL_TO_LABEL = {
@@ -59,7 +59,7 @@ let correct = 0, wrong = 0, asked = 0, scored = 0
 let recovered = 0, recoverable = 0
 const misses = []
 
-console.log(`\nReplayer ${data.length} beskeder gennem tool-calling-routeren (${'claude-sonnet-4-6'})...\n`)
+console.log(`\nReplayer ${data.length} beskeder gennem tool-calling-routeren (${ROUTER_MODEL})...\n`)
 
 for (const r of data) {
   const message = r[idx.message]
