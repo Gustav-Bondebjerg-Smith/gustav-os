@@ -11,6 +11,7 @@ import { createTaskFromCapture, completeTask, moveTask, deleteTask, listTasks, U
 import { routeMessage, type RouterResult, type RouterTurn } from './agent-router'
 import { recallGlobal, formatGlobalForPrompt, saveMemory, type MemoryType } from './memory-facts'
 import { suggestMeal } from './meals'
+import { getSpendSummary } from './finance'
 
 const PROPOSAL_MODEL = 'claude-haiku-4-5-20251001'
 const ACTIVITY_DETECTOR_MODEL = 'claude-haiku-4-5-20251001'
@@ -1924,6 +1925,30 @@ async function handleAgentSuggestMeal(
   }
 }
 
+// Forbrugs-resumé. REN LÆSNING (samme undtagelse fra double-gate som
+// search_memory/suggest_meal): getSpendSummary aggregerer posteringerne pr.
+// måned deterministisk i kode. LLM'en vælger kun værktøjet + slots (focus/months),
+// ingen tal kommer fra modellen. Skriver intet.
+async function handleAgentFinanceSummary(
+  msg: TelegramMessage,
+  focus: string,
+  months: number | null
+): Promise<HandleResult> {
+  await sendChatAction(msg.chat.id)
+  try {
+    const { reply } = await getSpendSummary({
+      focus: focus || undefined,
+      months: months ?? undefined,
+    })
+    await sendMessage(msg.chat.id, reply)
+    return { status: 'processed', reason: 'agent_finance_summary' }
+  } catch (e) {
+    console.error('finance_summary fejlede:', e)
+    await sendMessage(msg.chat.id, 'Kunne ikke hente forbrugstallene lige nu. Prøv igen om lidt.')
+    return { status: 'processed', reason: 'agent_finance_failed' }
+  }
+}
+
 async function dispatchViaAgent(
   msg: TelegramMessage,
   text: string,
@@ -2053,6 +2078,12 @@ async function dispatchViaAgent(
       const meal = typeof input.meal === 'string' ? input.meal.trim() : ''
       const constraints = typeof input.constraints === 'string' ? input.constraints.trim() : ''
       return handleAgentSuggestMeal(msg, meal, constraints)
+    }
+    case 'finance_summary': {
+      const focus = typeof input.focus === 'string' ? input.focus.trim() : ''
+      const months =
+        typeof input.months === 'number' && Number.isFinite(input.months) ? input.months : null
+      return handleAgentFinanceSummary(msg, focus, months)
     }
     default:
       console.warn('agent-router: ukendt værktøj', routed.tool)

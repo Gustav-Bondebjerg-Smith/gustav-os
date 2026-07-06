@@ -133,6 +133,26 @@ export const TOOLS: AnthropicTool[] = [
     },
   },
   {
+    name: 'finance_summary',
+    description:
+      'Opgør Gustavs PENGEFORBRUG med rigtige tal fra hans bankdata, pr. måned. Brug når han spørger hvad han BRUGER/har brugt af penge: "hvor mange penge bruger jeg på mad", "hvad bruger jeg pr. måned på dagligvarer", "hvor meget har jeg brugt på takeaway/sodavand", "hvad koster transport mig", "hvad bruger jeg penge på". Regner deterministisk på posteringerne (kategori/synd pr. måned). Et penge/forbrugs-spørgsmål er ALDRIG search_memory og ALDRIG save_note.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        focus: {
+          type: 'string',
+          description:
+            'Hvad forbruget skal opgøres for, med Gustavs egne ord: "mad", "dagligvarer", "takeaway", "transport", "sodavand"... Dækker spørgsmålet FLERE dele på én gang ("dagligvarer og mad ude/takeaway"), så send HELE frasen ordret - vælg aldrig kun den ene del. Udelad for et samlet overblik over alle udgifter.',
+        },
+        months: {
+          type: 'integer',
+          description: 'Hvor mange måneder tilbage (1-12). Udelad for standard (de seneste 3).',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'save_note',
     description:
       'Gem beskeden som en note i second brain. Det RETTE valg for IKKE-handlinger: tanker, ideer, observationer og fakta/info Gustav vil huske. Det er IKKE en skraldespand, og IKKE for ting Gustav skal GØRE - et konkret næste-skridt (også "husk at gøre X") er en opgave (create_task).',
@@ -277,6 +297,7 @@ function buildStableSystem(globalFacts: string): string {
     '- Spørger Gustav til en KONKRET ret eller opskrift, også en han har fået før ("har du opskriften på hønsesuppe", "vis den hønsesuppe", "hvad var den ret du foreslog") -> suggest_meal; den henter den gemte opskrift. Mad/opskrifter er ALDRIG search_memory, heller ikke når spørgsmålet starter med "har du" eller "hvad var".',
     '- Vil Gustav TILPASSE/SKALERE en kendt ret til sit faktiske indkøb ("tilpas den bagte ret, jeg har 800g oksekød 12%", "skalér hønsesuppen til 6 portioner", "ret den til med 1 kg kylling") -> suggest_meal med constraints der indeholder BÅDE rettens navn OG mængderne. Opskriften omregnes så makroerne holder; det er ikke search_memory.',
     '- Retter Gustav en VARIG mad-præference/allergi/mål ("jeg spiser ikke svinekød", "foreslå mere protein", "allergisk mod nødder") -> save_memory, ikke suggest_meal. suggest_meal er kun selve forslaget; varige fakta hører i save_memory og bruges så af suggest_meal næste gang.',
+    '- Spørgsmål om PENGE og FORBRUG ("hvor meget bruger jeg på X", "hvad koster Y mig om måneden", "hvad har jeg brugt på Z", "hvordan ser mit forbrug ud") -> finance_summary. Den regner på rigtige banktal. Penge/forbrug er ALDRIG search_memory. Undtagelse: nettoformue/saldo ("hvad er min nettoformue", "hvad står der på kontoen") har intet værktøj endnu -> search_memory som hidtil.',
     '- Rene høflighedsfraser, hilsner, små-ord eller transskriptions-fragmenter uden konkret handling ("god fornøjelse", "tak", "ok", "godmorgen") -> save_note. De er IKKE stop_activity eller andre handlinger.',
     '- stop_activity KUN når Gustav tydeligt afslutter/pauser noget han er i gang med - ikke ved en afsked eller et høfligt udtryk.',
     '- En aktivitet Gustav startede tidligere men STADIG er i gang ("startede kl 16, er stadig i gang") kan ikke bruge start_activity (kun nutid). Brug create_event: summary = aktiviteten, start = det nævnte tidspunkt i dag, end = nu. Så logges den faktiske tidsblok.',

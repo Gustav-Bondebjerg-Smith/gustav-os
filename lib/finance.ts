@@ -30,6 +30,7 @@ import {
   type ParsedReceiptLine,
 } from './finance-shared'
 import { loadSins } from './finance-sins'
+import { loadCategories } from './finance-categories'
 
 // Re-eksportér det klient-sikre lag, så server-kode kan nøjes med ét import-sted.
 export * from './finance-shared'
@@ -763,6 +764,251 @@ export async function getWeeklyFinanceSummary(): Promise<{
     weekSwing: round2(nw.checking - weekAgo),
     sins,
   }
+}
+
+// ============================ FORBRUGS-RESUMÉ (assistent) ============================
+// Svarer på "hvor meget bruger jeg på X" fra Telegram (finance_summary-toolet).
+// Arkitektur som mad-modulet: LLM'en vælger kun tool + slots (focus/months);
+// AL regning sker deterministisk her. Ingen model-kald.
+
+export type SpendSummaryOptions = { months?: number; focus?: string }
+
+// Dansk-normalisering til focus-match (samme aa/ae/oe-idé som meals.normalizeTitle).
+function normalizeFocusText(s: string): string {
+  return s.toLowerCase().replaceAll('æ', 'ae').replaceAll('ø', 'oe').replaceAll('å', 'aa')
+}
+function focusTokens(s: string): string[] {
+  return normalizeFocusText(s)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+// "mad" er et SAMLET view (dagligvarer + ude/takeaway) fordi det er sådan Gustav
+// spørger. Tokens - ikke substrenge - så "ude" i "mad ude" ikke fejlmatcher andet.
+const MAD_TOKENS = new Set(['mad', 'madbudget', 'kost', 'spise', 'spiser', 'maaltid', 'maaltider', 'food'])
+
+type SpendFocus =
+  | { kind: 'mad' }
+  | { kind: 'sin'; key: string; label: string }
+  | { kind: 'category'; key: string; label: string }
+  | { kind: 'overview'; unmatched?: string }
+
+// Deterministisk opløsning af focus-teksten: mad-view først, så synder (mest
+// specifikke), så kategorier (faste + Gustavs egne). Intet match -> overblik.
+async function resolveSpendFocus(focusRaw: string | undefined): Promise<SpendFocus> {
+  const focus = (focusRaw ?? '').trim()
+  if (!focus) return { kind: 'overview' }
+  const tokens = new Set(focusTokens(focus))
+  if ([...tokens].some((t) => MAD_TOKENS.has(t))) return { kind: 'mad' }
+  for (const s of await loadSins()) {
+    const own = new Set([normalizeFocusText(s.key), ...focusTokens(s.label)])
+    if ([...own].some((t) => tokens.has(t))) return { kind: 'sin', key: s.key, label: s.label }
+  }
+  for (const c of await loadCategories()) {
+    const own = new Set([normalizeFocusText(c.key), ...focusTokens(c.label)])
+    if ([...own].some((t) => tokens.has(t))) return { kind: 'category', key: c.key, label: c.label }
+  }
+  return { kind: 'overview', unmatched: focus }
+}
+
+type MonthAgg = {
+  total: number
+  byCat: Map<string, number>
+  bySin: Map<string, number>
+  madDagligvarer: number
+  madUde: number
+}
+function emptyMonthAgg(): MonthAgg {
+  return { total: 0, byCat: new Map(), bySin: new Map(), madDagligvarer: 0, madUde: 0 }
+}
+
+const fmtKr = (n: number) => `${Math.round(n).toLocaleString('da-DK')} kr`
+const fmtDm = (ymd: string) => `${Number(ymd.slice(8, 10))}/${Number(ymd.slice(5, 7))}`
+
+// "2026-04" -> "Apr" (år på når det ikke er i år: "Nov 25").
+function monthLabel(ym: string, todayYmd: string): string {
+  const name = new Intl.DateTimeFormat('da-DK', { timeZone: 'UTC', month: 'short' })
+    .format(new Date(`${ym}-01T00:00:00Z`))
+    .replace('.', '')
+  const label = name.charAt(0).toUpperCase() + name.slice(1)
+  return ym.slice(0, 4) === todayYmd.slice(0, 4) ? label : `${label} ${ym.slice(2, 4)}`
+}
+
+// Forbrug pr. måned, opgjort for et fokus (mad/kategori/synd) eller som overblik.
+// Vinduet ankres til NYESTE posteringsdato (ikke i dag), så et hul i importen
+// aldrig viser tomme måneder som "0 kr" - i stedet siges det ærligt at data
+// slutter, og hvilke måneder der mangler. Det var præcis fejlen i recall-svaret
+// 2026-07-05: frosne juni-tal blev solgt som løbende forbrug.
+export async function getSpendSummary(opts: SpendSummaryOptions = {}): Promise<{ reply: string }> {
+  const sb = getSupabase()
+  const today = todayCphYmd()
+  const monthsBack = Math.min(12, Math.max(1, Math.round(opts.months ?? 3)))
+  const focus = await resolveSpendFocus(opts.focus)
+
+  // Nyeste posteringsdato = hvor langt data rækker.
+  const { data: newest, error: ne } = await sb
+    .from('transactions')
+    .select('booked_date')
+    .order('booked_date', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (ne) throw new Error(`getSpendSummary newest-fejl: ${ne.message}`)
+  const lastData = newest ? String((newest as Record<string, unknown>).booked_date) : null
+  if (!lastData) {
+    return { reply: 'Ingen bankdata endnu. Upload bank-CSV + Storebox på /finans, så kan jeg opgøre forbruget.' }
+  }
+
+  // Vindue: monthsBack måneder der SLUTTER ved nyeste data (eller i dag hvis data er frisk).
+  const currentYm = today.slice(0, 7)
+  const lastDataYm = lastData.slice(0, 7)
+  const anchorYm = lastDataYm < currentYm ? lastDataYm : currentYm
+  const windowStart = addMonthsYmd(`${anchorYm}-01`, -(monthsBack - 1))
+  const months: string[] = []
+  for (let i = 0; i < monthsBack; i++) months.push(addMonthsYmd(windowStart, i).slice(0, 7))
+
+  // Alle udgifter i vinduet (pagineret - PostgREST capper på 1000, jf. reconcile-buggen).
+  const byMonth = new Map<string, MonthAgg>()
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transactions')
+      .select('booked_date, amount, category, sin_tag')
+      .lt('amount', 0)
+      .gte('booked_date', windowStart)
+      .order('booked_date', { ascending: true })
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`getSpendSummary tx-fejl: ${error.message}`)
+    const rows = data ?? []
+    for (const r of rows) {
+      const row = r as Record<string, unknown>
+      const ym = String(row.booked_date).slice(0, 7)
+      const agg = byMonth.get(ym) ?? emptyMonthAgg()
+      const a = Math.abs(Number(row.amount))
+      const cat = typeof row.category === 'string' && row.category ? row.category : 'andet'
+      const sin = typeof row.sin_tag === 'string' && row.sin_tag ? row.sin_tag : null
+      agg.total += a
+      agg.byCat.set(cat, (agg.byCat.get(cat) ?? 0) + a)
+      if (sin) agg.bySin.set(sin, (agg.bySin.get(sin) ?? 0) + a)
+      // Mad-partition PR. RÆKKE (ingen dobbelttælling): dagligvarer-delen først,
+      // resten af mad-paraplyen i ude-delen. Mad-synderne (takeaway + Gustavs egen
+      // hurtigmad-synd) fanger mad der er kategoriseret udenfor ude (fx Wolt-
+      // abonnement); findes synden ikke, rammer betingelsen bare aldrig.
+      if (cat === 'dagligvarer') agg.madDagligvarer += a
+      else if (cat === 'ude' || sin === 'takeaway' || sin === 'hurtigmad') agg.madUde += a
+      byMonth.set(ym, agg)
+    }
+    if (rows.length < PAGE) break
+  }
+
+  // Varelinje-synder (fx sodavand i et Netto-køb) - samme kilde som synde-kortet.
+  // Kun bySin: linjernes beløb ligger allerede inde i transaktionens kategori-total.
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from('transaction_lines')
+      .select('amount, sin_tag, transactions!inner(booked_date)')
+      .not('sin_tag', 'is', null)
+      .gte('transactions.booked_date', windowStart)
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`getSpendSummary lines-fejl: ${error.message}`)
+    const rows = data ?? []
+    for (const r of rows) {
+      const row = r as Record<string, unknown>
+      // Embedded to-one join er et objekt, men vær robust hvis klienten giver et array.
+      const parentRaw = Array.isArray(row.transactions) ? row.transactions[0] : row.transactions
+      const parent = parentRaw as { booked_date?: unknown } | null
+      const booked = parent && typeof parent.booked_date === 'string' ? parent.booked_date : null
+      const sin = typeof row.sin_tag === 'string' && row.sin_tag ? row.sin_tag : null
+      if (!booked || !sin) continue
+      const ym = booked.slice(0, 7)
+      const agg = byMonth.get(ym) ?? emptyMonthAgg()
+      agg.bySin.set(sin, (agg.bySin.get(sin) ?? 0) + Math.abs(Number(row.amount)))
+      byMonth.set(ym, agg)
+    }
+    if (rows.length < PAGE) break
+  }
+
+  // Delvis måned: nyeste data-måned hvor sidste postering ikke er månedens sidste dag.
+  const lastIsMonthEnd = addDaysYmd(lastData, 1).slice(0, 7) !== lastDataYm
+  const isPartial = (ym: string) => ym === lastDataYm && (!lastIsMonthEnd || ym === currentYm)
+  const fullMonths = months.filter((ym) => !isPartial(ym))
+  const mLabel = (ym: string) => monthLabel(ym, today)
+  const suffix = (ym: string) => (isPartial(ym) ? ` (til ${fmtDm(lastData)})` : '')
+
+  // Snit over HELE måneder i vinduet (delvise måneder ville trække snittet ned).
+  const avg = (pick: (a: MonthAgg) => number) => {
+    if (fullMonths.length === 0) return null
+    const sum = fullMonths.reduce((acc, ym) => acc + pick(byMonth.get(ym) ?? emptyMonthAgg()), 0)
+    return sum / fullMonths.length
+  }
+
+  const lines: string[] = []
+  if (focus.kind === 'mad') {
+    lines.push('💰 Mad pr. måned (dagligvarer + ude/takeaway)')
+    for (const ym of months) {
+      const a = byMonth.get(ym) ?? emptyMonthAgg()
+      lines.push(
+        `${mLabel(ym)}${suffix(ym)}: ${Math.round(a.madDagligvarer).toLocaleString('da-DK')} + ${Math.round(a.madUde).toLocaleString('da-DK')} = ${fmtKr(a.madDagligvarer + a.madUde)}`
+      )
+    }
+    const avgDagli = avg((a) => a.madDagligvarer)
+    const avgUde = avg((a) => a.madUde)
+    if (avgDagli != null && avgUde != null) {
+      lines.push('')
+      lines.push(
+        `Snit pr. hel måned: ${fmtKr(avgDagli)} dagligvarer + ${fmtKr(avgUde)} ude/takeaway = ca. ${fmtKr(avgDagli + avgUde)}.`
+      )
+    }
+  } else if (focus.kind === 'sin' || focus.kind === 'category') {
+    // Udtrukket til lokale konstanter, så closure-narrowing ikke afhænger af TS-version.
+    const fromSins = focus.kind === 'sin'
+    const focusKey = focus.key
+    const pick = (a: MonthAgg) => (fromSins ? (a.bySin.get(focusKey) ?? 0) : (a.byCat.get(focusKey) ?? 0))
+    lines.push(`💰 ${focus.label} pr. måned`)
+    for (const ym of months) lines.push(`${mLabel(ym)}${suffix(ym)}: ${fmtKr(pick(byMonth.get(ym) ?? emptyMonthAgg()))}`)
+    const a = avg(pick)
+    if (a != null) {
+      lines.push('')
+      lines.push(`Snit pr. hel måned: ca. ${fmtKr(a)}.`)
+    }
+  } else {
+    const catLabel = new Map((await loadCategories()).map((c) => [c.key, c.label]))
+    const sinLabel = new Map((await loadSins()).map((s) => [s.key, s.label]))
+    if (focus.unmatched) lines.push(`Kender ikke "${focus.unmatched}" som kategori eller synd, her er det samlede overblik.`)
+    lines.push('💰 Udgifter pr. måned')
+    for (const ym of months) lines.push(`${mLabel(ym)}${suffix(ym)}: ${fmtKr((byMonth.get(ym) ?? emptyMonthAgg()).total)}`)
+    // Detalje for nyeste HELE måned (ellers nyeste viste): top-kategorier + synder.
+    const detailYm = [...fullMonths].pop() ?? months[months.length - 1]
+    const detail = byMonth.get(detailYm) ?? emptyMonthAgg()
+    const cats = [...detail.byCat.entries()].sort((x, y) => y[1] - x[1])
+    if (cats.length > 0) {
+      lines.push('')
+      lines.push(`${mLabel(detailYm)}${suffix(detailYm)} fordelt:`)
+      for (const [key, amount] of cats.slice(0, 6)) lines.push(`• ${catLabel.get(key) ?? key}: ${fmtKr(amount)}`)
+      const rest = cats.slice(6).reduce((acc, [, amount]) => acc + amount, 0)
+      if (rest > 0) lines.push(`• Øvrige: ${fmtKr(rest)}`)
+      const sins = [...detail.bySin.entries()].sort((x, y) => y[1] - x[1])
+      if (sins.length > 0) {
+        lines.push(`Synder: ${sins.map(([key, amount]) => `${sinLabel.get(key) ?? key} ${fmtKr(amount)}`).join(', ')}`)
+      }
+    }
+  }
+
+  // Ærlighed om datadækning: er data mere end en uge gammel, så sig det, og
+  // navngiv de måneder svaret IKKE kan dække. Aldrig frosne tal uden varsel.
+  const daysOld = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${lastData}T00:00:00Z`)) / 86400000)
+  if (daysOld > 7) {
+    const missing: string[] = []
+    if (!lastIsMonthEnd || lastDataYm === currentYm) missing.push(`resten af ${mLabel(lastDataYm).toLowerCase()}`)
+    for (let ym = addMonthsYmd(`${lastDataYm}-01`, 1).slice(0, 7); ym <= currentYm; ym = addMonthsYmd(`${ym}-01`, 1).slice(0, 7)) {
+      missing.push(mLabel(ym).toLowerCase())
+    }
+    lines.push('')
+    lines.push(
+      `⚠️ Bankdata slutter ${fmtDm(lastData)} (${daysOld} dage siden). Upload frisk bank-CSV + Storebox på /finans, så kan jeg også dække ${missing.join(', ')}.`
+    )
+  }
+
+  return { reply: lines.join('\n') }
 }
 
 // ============================ NETTOFORMUE-HISTORIK ============================
