@@ -14,6 +14,7 @@
 import 'server-only'
 import { getSupabase } from './supabase'
 import { recallGlobal, formatGlobalForPrompt } from './memory-facts'
+import { extractJsonObject } from './telegram-shared'
 
 const MEAL_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -68,39 +69,8 @@ function normalizeTitle(t: string): string {
     .trim()
 }
 
-// Robust JSON-udtraek: scan balancerede {} og respektér strenge. ALDRIG fence-strip
-// (Haiku pakker nogle gange svaret i ```json OG tilfoejer prosa efter objektet, jf.
-// AGENTS.md). Holdt lokal her for at undgaa cirkulaer import med telegram-webhook.ts.
-function extractJsonObject<T = Record<string, unknown>>(raw: string | null | undefined): T | null {
-  if (!raw) return null
-  const start = raw.indexOf('{')
-  if (start < 0) return null
-  let depth = 0
-  let inStr = false
-  let esc = false
-  for (let i = start; i < raw.length; i++) {
-    const ch = raw[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (ch === '\\') esc = true
-      else if (ch === '"') inStr = false
-      continue
-    }
-    if (ch === '"') inStr = true
-    else if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        try {
-          return JSON.parse(raw.slice(start, i + 1)) as T
-        } catch {
-          return null
-        }
-      }
-    }
-  }
-  return null
-}
+// extractJsonObject importeres nu fra telegram-shared (webhook-splittet 2026-07-06
+// fjernede den cirkulaere import der tvang en lokal kopi her).
 
 async function anthropic(system: string, user: string, temperature = 0.6): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY
